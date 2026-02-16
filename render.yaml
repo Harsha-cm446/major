@@ -1,0 +1,62 @@
+# Render Blueprint — AI Interview Platform
+# https://render.com/docs/blueprint-spec
+#
+# Usage:
+#   1. Push this repo to GitHub
+#   2. Go to https://dashboard.render.com → New → Blueprint
+#   3. Connect your repo → Render reads this file and creates all services
+#   4. Set environment variables (MongoDB Atlas URI, JWT secret, SMTP creds, Ollama URL)
+
+services:
+  # ── Backend (FastAPI) ─────────────────────────────
+  - type: web
+    name: ai-interview-backend
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free                 # free tier — 512 MB RAM, spins down after inactivity
+    healthCheckPath: /health
+    envVars:
+      - key: MONGODB_URL
+        sync: false            # you'll enter this manually (MongoDB Atlas connection string)
+      - key: DATABASE_NAME
+        value: ai_interview_platform
+      - key: JWT_SECRET_KEY
+        generateValue: true    # Render auto-generates a secure random string
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "1440"
+      - key: OLLAMA_BASE_URL
+        sync: false            # enter your Ollama host URL (e.g. https://your-ollama.example.com)
+      - key: FRONTEND_URL
+        sync: false            # set after frontend deploys (e.g. https://ai-interview-frontend.onrender.com)
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+
+  # ── Frontend (React Static Site) ──────────────────
+  - type: web
+    name: ai-interview-frontend
+    runtime: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: ./frontend/dist
+    pullRequestPreviewsEnabled: true
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html    # SPA client-side routing support
+    envVars:
+      - key: VITE_API_URL
+        sync: false                  # set to https://ai-interview-backend.onrender.com/api

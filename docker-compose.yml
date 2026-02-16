@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # ── MongoDB ────────────────────
+  mongodb:
+    image: mongo:7
+    container_name: interview_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  # ── Redis (optional) ──────────
+  redis:
+    image: redis:7-alpine
+    container_name: interview_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  # ── Backend API ────────────────
+  backend:
+    build: ./backend
+    container_name: interview_backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - mongodb
+      - redis
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017
+      - REDIS_URL=redis://redis:6379
+    restart: unless-stopped
+
+  # ── Ollama (LLM) ──────────────
+  ollama:
+    image: ollama/ollama
+    container_name: interview_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    # After starting, run: docker exec -it interview_ollama ollama pull llama3
+
+volumes:
+  mongo_data:
+  ollama_data:
