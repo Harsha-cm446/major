@@ -5,7 +5,13 @@ import toast from 'react-hot-toast';
 import {
   Mic, MicOff, Camera, Send, Loader2, User, Briefcase, Clock,
   CheckCircle, Volume2, VolumeX, Timer, AlertTriangle, XCircle, Code,
+  Monitor,
 } from 'lucide-react';
+
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
 
 export default function CandidateJoin() {
   const { token } = useParams();
@@ -28,12 +34,17 @@ export default function CandidateJoin() {
   const [questionNumber, setQuestionNumber] = useState(0);
   const [endReason, setEndReason] = useState('');
   const [techScore, setTechScore] = useState(null);
+  const [interviewSessionId, setInterviewSessionId] = useState(null);
+  const [screenSharing, setScreenSharing] = useState(false);
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const recognitionRef = useRef(null);
   const timeIntervalRef = useRef(null);
   const synthRef = useRef(window.speechSynthesis);
+  const wsRef = useRef(null);
+  const peerConnectionsRef = useRef({});
+  const screenStreamRef = useRef(null);
 
   // ── Load interview info ────────────────────────────
   useEffect(() => {
@@ -168,10 +179,121 @@ export default function CandidateJoin() {
   useEffect(() => {
     return () => {
       streamRef.current?.getTracks().forEach((t) => t.stop());
+      screenStreamRef.current?.getTracks().forEach((t) => t.stop());
       synthRef.current.cancel();
       if (recognitionRef.current) recognitionRef.current.stop();
       clearInterval(timeIntervalRef.current);
+      wsRef.current?.close();
+      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
     };
+  }, []);
+
+  // ── WebSocket for live streaming to HR ─────────────
+  useEffect(() => {
+    if (phase !== 'interview' || !interviewSessionId || !token) return;
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/interview/${interviewSessionId}?token=${token}&role=candidate&name=${encodeURIComponent(candidateName)}`;
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('[WS] Connected to interview room');
+      ws.send(JSON.stringify({
+        type: 'stream_ready',
+        has_camera: cameraOn,
+        has_screen: !!screenStreamRef.current,
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleWSMessage(data);
+      } catch {}
+    };
+
+    ws.onclose = () => console.log('[WS] Disconnected');
+
+    return () => {
+      ws.close();
+      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+      peerConnectionsRef.current = {};
+    };
+  }, [phase, interviewSessionId]);
+
+  const handleWSMessage = useCallback(async (data) => {
+    switch (data.type) {
+      case 'request_stream':
+        await createStreamOffer(data.from);
+        break;
+      case 'webrtc_answer':
+        {
+          const pc = peerConnectionsRef.current[data.from];
+          if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          }
+        }
+        break;
+      case 'ice_candidate':
+        {
+          const pc = peerConnectionsRef.current[data.from];
+          if (pc && data.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          }
+        }
+        break;
+      default:
+        break;
+    }
+  }, []);
+
+  const createStreamOffer = useCallback(async (targetId) => {
+    // Close existing connection to this target
+    peerConnectionsRef.current[targetId]?.close();
+
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    peerConnectionsRef.current[targetId] = pc;
+
+    // Add camera tracks
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, streamRef.current);
+      });
+    }
+
+    // Add screen share tracks
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, screenStreamRef.current);
+      });
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'ice_candidate',
+          target: targetId,
+          candidate: event.candidate.toJSON(),
+        }));
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        pc.close();
+        delete peerConnectionsRef.current[targetId];
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    wsRef.current?.send(JSON.stringify({
+      type: 'webrtc_offer',
+      target: targetId,
+      offer: pc.localDescription.toJSON(),
+    }));
   }, []);
 
   // ── Start interview ────────────────────────────────
@@ -180,10 +302,26 @@ export default function CandidateJoin() {
       toast.error('Please enter your name');
       return;
     }
+
+    // Request screen share before API call (needs user gesture)
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      screenStreamRef.current = screenStream;
+      setScreenSharing(true);
+      screenStream.getVideoTracks()[0].onended = () => {
+        screenStreamRef.current = null;
+        setScreenSharing(false);
+      };
+    } catch {
+      // Screen share is optional — candidate can decline
+      console.log('Screen share not captured');
+    }
+
     setLoading(true);
     try {
       const res = await candidateAPI.start(token, { candidate_name: candidateName });
       setSessionId(res.data.session_id);
+      setInterviewSessionId(res.data.interview_session_id);
       setCurrentQuestion(res.data.question);
       setCurrentRound(res.data.round || 'Technical');
       setTimeStatus(res.data.time_status);
@@ -325,6 +463,10 @@ export default function CandidateJoin() {
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
                 <p className="font-semibold mb-1">🎤 Voice-Based AI Interview</p>
                 <p>The AI will ask questions aloud using text-to-speech. Answer using your microphone — no typing needed except for coding questions. Enable your camera for the best experience.</p>
+              </div>
+
+              <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-sm text-purple-800">
+                <p><strong>📺 Screen Sharing:</strong> You'll be asked to share your screen when starting. This allows the HR team to monitor the interview in real-time.</p>
               </div>
 
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm text-yellow-800">
@@ -511,7 +653,7 @@ export default function CandidateJoin() {
                 </div>
               )}
             </div>
-            <div className="flex gap-3 mt-3">
+            <div className="flex items-center space-x-3">
               <button
                 onClick={toggleCamera}
                 className={`flex-1 py-2 rounded-lg text-sm font-medium flex items-center justify-center space-x-1 ${
@@ -536,6 +678,14 @@ export default function CandidateJoin() {
                 <span>{isRecording ? 'Stop' : 'Speak'}</span>
               </button>
             </div>
+
+            {/* Screen share status */}
+            {screenSharing && (
+              <div className="mt-2 flex items-center space-x-2 text-xs text-green-700 bg-green-50 rounded-lg px-3 py-2">
+                <Monitor size={14} />
+                <span>Screen sharing active</span>
+              </div>
+            )}
 
             <div className="mt-4 bg-white rounded-xl border border-gray-100 p-4">
               <div className="flex items-center space-x-3">

@@ -165,6 +165,23 @@ async def interview_websocket(websocket: WebSocket, room_id: str):
                     "from": conn_id,
                 })
 
+            elif msg_type == "request_stream":
+                # HR requests a candidate's stream
+                await manager.send_to(room_id, data["target"], {
+                    "type": "request_stream",
+                    "from": conn_id,
+                })
+
+            elif msg_type == "stream_ready":
+                # Candidate signals they have streams available
+                await manager.broadcast(room_id, {
+                    "type": "stream_ready",
+                    "from": conn_id,
+                    "name": name,
+                    "has_camera": data.get("has_camera", False),
+                    "has_screen": data.get("has_screen", False),
+                }, exclude=conn_id)
+
             elif msg_type == "chat_message":
                 await manager.broadcast(room_id, {
                     "type": "chat_message",

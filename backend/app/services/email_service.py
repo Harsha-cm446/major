@@ -37,6 +37,9 @@ def _get_email_provider() -> str:
 
 async def _send_via_resend(to_email: str, subject: str, html_body: str, plain_text: str):
     """Send email via Resend HTTPS API — works everywhere, no SMTP port needed."""
+    # Resend free tier only allows sending from onboarding@resend.dev
+    # To use a custom domain, verify it in the Resend dashboard first
+    from_address = "AI Interview Platform <onboarding@resend.dev>"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             "https://api.resend.com/emails",
@@ -45,7 +48,7 @@ async def _send_via_resend(to_email: str, subject: str, html_body: str, plain_te
                 "Content-Type": "application/json",
             },
             json={
-                "from": settings.EMAIL_FROM or "AI Interview Platform <onboarding@resend.dev>",
+                "from": from_address,
                 "to": [to_email],
                 "subject": subject,
                 "html": html_body,
@@ -80,12 +83,26 @@ async def _send_via_smtp(to_email: str, subject: str, html_body: str, plain_text
 # ── Unified Send ─────────────────────────────────────
 
 async def _send_email(to_email: str, subject: str, html_body: str, plain_text: str):
-    """Send an email using the configured provider."""
+    """Send an email using the configured provider, with auto-fallback."""
     provider = _get_email_provider()
 
     if provider == "resend":
-        await _send_via_resend(to_email, subject, html_body, plain_text)
-        print(f"✅ Email sent to {to_email} (via Resend)")
+        try:
+            await _send_via_resend(to_email, subject, html_body, plain_text)
+            print(f"✅ Email sent to {to_email} (via Resend)")
+            return
+        except Exception as e:
+            print(f"⚠️ Resend failed for {to_email}: {e}")
+            # Auto-fallback to SMTP if configured
+            if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                print(f"   Falling back to SMTP...")
+                try:
+                    await _send_via_smtp(to_email, subject, html_body, plain_text)
+                    print(f"✅ Email sent to {to_email} (via SMTP fallback)")
+                    return
+                except Exception as smtp_err:
+                    print(f"❌ SMTP fallback also failed: {smtp_err}")
+            raise
     elif provider == "smtp":
         await _send_via_smtp(to_email, subject, html_body, plain_text)
         print(f"✅ Email sent to {to_email} (via SMTP)")

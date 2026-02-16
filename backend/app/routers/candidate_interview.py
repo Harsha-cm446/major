@@ -93,6 +93,7 @@ async def get_interview_info(token: str):
         "candidate_status": candidate.get("status", "invited"),
         "ai_session_id": str(ai_session["_id"]) if ai_session else None,
         "ai_session_status": ai_session.get("status") if ai_session else None,
+        "interview_session_id": candidate.get("interview_session_id", ""),
     }
 
 
@@ -120,6 +121,7 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
             proc_total = existing.get("processing_time_total", 0.0)
             return {
                 "session_id": str(existing["_id"]),
+                "interview_session_id": candidate.get("interview_session_id", ""),
                 "question": {
                     "question_id": q["question_id"],
                     "question": q["question"],
@@ -202,6 +204,7 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
 
     return {
         "session_id": session_id,
+        "interview_session_id": candidate.get("interview_session_id", ""),
         "question": {
             "question_id": question_id,
             "question": q_data["question"],
