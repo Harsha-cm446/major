@@ -197,16 +197,16 @@ async def submit_answer(
     try:
         past_cursor = db.mock_sessions.find(
             {
-                \"user_id\": str(user[\"_id\"]),
-                \"job_role\": session[\"job_role\"],
-                \"_id\": {\"$ne\": ObjectId(session_id)},
+                "user_id": str(user["_id"]),
+                "job_role": session["job_role"],
+                "_id": {"$ne": ObjectId(session_id)},
             },
-            {\"questions.question\": 1},
-        ).sort(\"created_at\", -1).limit(5)
+            {"questions.question": 1},
+        ).sort("created_at", -1).limit(5)
         async for past in past_cursor:
-            for q in past.get(\"questions\", []):
-                if q.get(\"question\") and q[\"question\"] not in past_session_questions:
-                    past_session_questions.append(q[\"question\"])
+            for q in past.get("questions", []):
+                if q.get("question") and q["question"] not in past_session_questions:
+                    past_session_questions.append(q["question"])
     except Exception:
         pass
     # Check time (using active time)
