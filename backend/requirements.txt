@@ -18,18 +18,16 @@ python-dotenv>=1.0.0
 bcrypt>=4.1.0
 google-genai>=1.0.0
 
-# ── AI / ML (install separately if needed) ──
-# pip install sentence-transformers openai-whisper opencv-python-headless deepface
-sentence-transformers>=2.2.2
+# ── AI / ML (optional — gracefully degrade if missing) ──
+# sentence-transformers needs PyTorch (~800MB) — omit for lightweight deploys
+# deepface needs TensorFlow (~1.5GB) — omit for lightweight deploys
+# Install locally: pip install sentence-transformers deepface
 numpy>=1.24.0
 scipy>=1.11.0
 scikit-learn>=1.3.0
 matplotlib>=3.7.0
 
-# ── New AI Components ──────────────────────
+# ── Document parsing ──────────────────────────
 PyPDF2>=3.0.0
 python-docx>=1.0.0
-networkx>=3.2.0
-shap>=0.43.0
-deepface>=0.0.80
 opencv-python-headless>=4.8.0

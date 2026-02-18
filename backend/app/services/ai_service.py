@@ -18,8 +18,13 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+
+try:
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity
+    ST_AVAILABLE = True
+except ImportError:
+    ST_AVAILABLE = False
 
 import google.genai as genai
 from google.genai import types as genai_types
@@ -102,9 +107,14 @@ class AIService:
         pass  # Gemini SDK doesn't require explicit cleanup
 
     @property
-    def embedding_model(self) -> SentenceTransformer:
+    def embedding_model(self):
+        if not ST_AVAILABLE:
+            return None
         if self._embedding_model is None:
-            self._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            try:
+                self._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+            except Exception:
+                return None
         return self._embedding_model
 
     # ── Gemini helpers ────────────────────────────────
@@ -370,9 +380,16 @@ Return ONLY a JSON object in this exact format:
                 "phase": "instant",
             }
 
-        # 1. Semantic similarity (SentenceTransformer — local, fast)
-        embeddings = self.embedding_model.encode([ideal_answer, candidate_answer])
-        sim_score = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]) * 100
+        # 1. Semantic similarity (SentenceTransformer if available, else word overlap)
+        if self.embedding_model is not None:
+            embeddings = self.embedding_model.encode([ideal_answer, candidate_answer])
+            sim_score = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]) * 100
+        else:
+            # Word-overlap fallback
+            ideal_words = set(ideal_answer.lower().split())
+            cand_words = set(candidate_answer.lower().split())
+            overlap = ideal_words & cand_words
+            sim_score = (len(overlap) / max(len(ideal_words), 1)) * 100
 
         # 2. Keyword coverage (pure string match — instant)
         answer_lower = candidate_answer.lower()
