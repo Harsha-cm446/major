@@ -3,4 +3,4 @@ builder = "NIXPACKS"
 buildCommand = "npm install && npm run build"
 
 [deploy]
-startCommand = "npx serve dist -s -l $PORT"
+startCommand = "sh -c 'npx serve dist -s -l ${PORT:-3000}'"

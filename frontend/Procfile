@@ -1,1 +1,1 @@
-web: npx serve dist -s -l $PORT
+web: sh -c 'npx serve dist -s -l ${PORT:-3000}'
