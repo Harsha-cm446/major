@@ -99,6 +99,13 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
         "technical_score": None,
         "hr_score": None,
         "processing_time_total": 0.0,  # Track cumulative AI processing time
+        "proctoring": {
+            "gaze_violations": 0,
+            "multi_person_alerts": 0,
+            "tab_switches": 0,
+            "total_away_time_sec": 0,
+            "violation_log": [],
+        },
         "created_at": datetime.utcnow(),
         "started_at": datetime.utcnow(),
     }
@@ -556,6 +563,92 @@ async def my_history(user: dict = Depends(get_current_user)):
             "completed_at": s.get("completed_at"),
         })
     return sessions
+
+
+# ── Proctoring Violation Logging ──────────────────────
+
+class ProctoringViolationRequest(BaseModel):
+    violation_type: str  # "gaze_away", "multi_person", "tab_switch"
+    duration_sec: Optional[float] = 0
+    details: Optional[str] = ""
+
+
+@router.post("/{session_id}/proctoring/violation")
+async def log_proctoring_violation(
+    session_id: str,
+    body: ProctoringViolationRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Log a proctoring violation (gaze away, multi-person, tab switch)."""
+    db = get_database()
+    session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["user_id"] != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Not your session")
+
+    violation_entry = {
+        "type": body.violation_type,
+        "timestamp": datetime.utcnow().isoformat(),
+        "duration_sec": body.duration_sec or 0,
+        "details": body.details or "",
+    }
+
+    # Increment counters based on violation type
+    inc_fields = {}
+    if body.violation_type == "gaze_away":
+        inc_fields["proctoring.gaze_violations"] = 1
+        inc_fields["proctoring.total_away_time_sec"] = body.duration_sec or 0
+    elif body.violation_type == "multi_person":
+        inc_fields["proctoring.multi_person_alerts"] = 1
+    elif body.violation_type == "tab_switch":
+        inc_fields["proctoring.tab_switches"] = 1
+
+    update_ops = {"$push": {"proctoring.violation_log": violation_entry}}
+    if inc_fields:
+        update_ops["$inc"] = inc_fields
+
+    await db.mock_sessions.update_one(
+        {"_id": ObjectId(session_id)},
+        update_ops,
+    )
+
+    return {"status": "logged"}
+
+
+@router.get("/{session_id}/proctoring/summary")
+async def get_proctoring_summary(
+    session_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Get proctoring summary for a session."""
+    db = get_database()
+    session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["user_id"] != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="Not your session")
+
+    proctoring = session.get("proctoring", {})
+    gaze_v = proctoring.get("gaze_violations", 0)
+    multi_p = proctoring.get("multi_person_alerts", 0)
+    tab_s = proctoring.get("tab_switches", 0)
+    away_time = proctoring.get("total_away_time_sec", 0)
+
+    total_violations = gaze_v + multi_p + tab_s
+
+    # Compute integrity score (100 = perfect, deductions for violations)
+    integrity_score = max(0, 100 - (gaze_v * 3) - (multi_p * 15) - (tab_s * 10) - (away_time * 0.5))
+
+    return {
+        "gaze_violations": gaze_v,
+        "multi_person_alerts": multi_p,
+        "tab_switches": tab_s,
+        "total_away_time_sec": round(away_time, 1),
+        "total_violations": total_violations,
+        "integrity_score": round(integrity_score, 1),
+        "violation_log": proctoring.get("violation_log", [])[-20:],  # Last 20
+    }
 
 
 # ── Practice Mode: Live Metrics ───────────────────────

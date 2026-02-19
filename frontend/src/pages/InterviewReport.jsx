@@ -401,6 +401,49 @@ export default function InterviewReport() {
         </div>
       )}
 
+      {/* ═══ Proctoring Summary ═══ */}
+      {report.proctoring && (report.proctoring.gaze_violations > 0 || report.proctoring.multi_person_alerts > 0 || report.proctoring.tab_switches > 0) && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
+          <h3 className="font-semibold text-indigo-700 mb-4">🛡️ Proctoring & Integrity Report</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+            {[
+              { label: 'Gaze Violations', value: report.proctoring.gaze_violations || 0, color: 'red' },
+              { label: 'Multi-Person Alerts', value: report.proctoring.multi_person_alerts || 0, color: 'orange' },
+              { label: 'Tab Switches', value: report.proctoring.tab_switches || 0, color: 'purple' },
+              { label: 'Away Time', value: `${Math.round(report.proctoring.total_away_time_sec || 0)}s`, color: 'blue' },
+            ].map((item) => (
+              <div key={item.label} className={`text-center bg-${item.color}-50 rounded-xl p-3`}>
+                <div className={`text-2xl font-bold text-${item.color}-600`}>{item.value}</div>
+                <div className="text-xs text-gray-500 mt-1">{item.label}</div>
+              </div>
+            ))}
+          </div>
+          {(() => {
+            const g = report.proctoring.gaze_violations || 0;
+            const m = report.proctoring.multi_person_alerts || 0;
+            const t = report.proctoring.tab_switches || 0;
+            const a = report.proctoring.total_away_time_sec || 0;
+            const score = Math.max(0, 100 - (g * 3) - (m * 15) - (t * 10) - (a * 0.5));
+            return (
+              <div className="mt-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-gray-600 font-medium">Integrity Score</span>
+                  <span className={`text-lg font-bold ${score >= 80 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
+                    {Math.round(score)}%
+                  </span>
+                </div>
+                <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${score}%` }} />
+                </div>
+                <p className="text-xs text-gray-400 mt-2">
+                  {score >= 80 ? 'Good integrity — minimal proctoring flags.' : score >= 50 ? 'Some integrity concerns flagged during the session.' : 'Significant integrity issues detected. Review violations carefully.'}
+                </p>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {/* ═══ Development Roadmap ═══ */}
       {report.development_roadmap && (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">

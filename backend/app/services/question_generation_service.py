@@ -117,29 +117,10 @@ class QuestionGenerationService:
         return model_registry.gemini_client
 
     async def _gemini_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
-        """Call Google Gemini API."""
-        import asyncio
-        client = self.gemini_client
-        if not client:
-            return ""
-
+        """Call Google Gemini API with automatic model fallback on quota errors."""
+        from app.services.model_registry import model_registry
         max_tokens = 400 if fast else 600
-
-        try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=settings.GEMINI_MODEL,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=system if system else None,
-                    temperature=0.7,
-                    max_output_tokens=max_tokens,
-                ),
-            )
-            return response.text if response.text else ""
-        except Exception as e:
-            print(f"Gemini error: {e}")
-            return ""
+        return await model_registry.gemini_generate(prompt, system, fast=fast, max_tokens=max_tokens)
 
     def _parse_json(self, text: str) -> dict:
         m = re.search(r"\{[\s\S]*\}", text)

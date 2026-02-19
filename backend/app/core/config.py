@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     # Gemini
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.5-flash"
+    # Fallback models when primary model quota is exhausted (free-tier rotation)
+    GEMINI_FALLBACK_MODELS: str = "gemini-2.0-flash,gemini-1.5-flash,gemini-2.0-flash-lite,gemini-1.5-flash-8b"
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"

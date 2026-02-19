@@ -57,6 +57,9 @@ export const mockAPI = {
   // Practice mode live metrics
   getPracticeMetrics: (sessionId, answerText, videoFrame) => api.post(`/mock-interview/${sessionId}/practice/metrics`, { partial_text: answerText || '', video_frame: videoFrame || null }),
   getPracticeSummary: (sessionId) => api.get(`/mock-interview/${sessionId}/practice/summary`),
+  // Proctoring
+  logViolation: (sessionId, data) => api.post(`/mock-interview/${sessionId}/proctoring/violation`, data),
+  getProctoringSummary: (sessionId) => api.get(`/mock-interview/${sessionId}/proctoring/summary`),
 };
 
 // ── Practice Mode ────────────────────────────────────

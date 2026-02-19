@@ -132,32 +132,11 @@ class AIService:
     # ── Gemini helpers ────────────────────────────────
 
     async def _gemini_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
-        """Call Google Gemini API. fast=True uses lower token limit."""
+        """Call Google Gemini API with automatic model fallback on quota errors.
+        fast=True uses lower token limit."""
         from app.services.model_registry import model_registry
-        client = model_registry.gemini_client
-        if not client:
-            print("Gemini error: GEMINI_API_KEY not configured")
-            return ""
-        self._gemini_client = client
-
         full_system = MASTER_SYSTEM_PROMPT + "\n\n" + system
-        max_tokens = 512 if fast else 2048
-
-        try:
-            response = await asyncio.to_thread(
-                self._gemini_client.models.generate_content,
-                model=settings.GEMINI_MODEL,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=full_system,
-                    temperature=0.7,
-                    max_output_tokens=max_tokens,
-                ),
-            )
-            return response.text if response.text else ""
-        except Exception as e:
-            print(f"Gemini error: {e}")
-            return ""
+        return await model_registry.gemini_generate(prompt, full_system, fast=fast)
 
     def _parse_json_from_response(self, text: str) -> dict:
         """Extract JSON from LLM response text."""
@@ -1049,6 +1028,8 @@ Return ONLY a JSON object:
             # ── Enriched analysis from integrated services ──
             "explainability": explainability_result,
             "development_roadmap": development_roadmap,
+            # ── Proctoring data ──
+            "proctoring": session.get("proctoring", {}),
         }
 
     def _analyze_performance(self, scores: dict, evaluations: list) -> tuple:

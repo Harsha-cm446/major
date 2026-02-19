@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import {
   Mic, MicOff, Camera, Send, Loader2, ArrowRight, Clock, Code,
   Volume2, VolumeX, Timer, AlertTriangle, CheckCircle, XCircle,
-  Activity, TrendingUp, Eye, Zap, Target, Brain,
+  Activity, TrendingUp, Eye, Zap, Target, Brain, Shield, UserX, MonitorX,
 } from 'lucide-react';
 import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
@@ -56,6 +56,13 @@ export default function MockInterview() {
   const [eyeTrackAlert, setEyeTrackAlert] = useState(false);
   const [gazeState, setGazeState] = useState('ATTENTIVE');
   const [multiPersonAlert, setMultiPersonAlert] = useState(false);
+
+  // Proctoring state
+  const [proctoringStats, setProctoringStats] = useState({
+    gazeViolations: 0, multiPersonAlerts: 0, tabSwitches: 0, totalAwayTime: 0,
+  });
+  const [tabSwitchAlert, setTabSwitchAlert] = useState(false);
+  const gazeWarningStartRef = useRef(null);
 
   // Live conversation mode refs
   const silenceTimerRef = useRef(null);
@@ -298,6 +305,89 @@ export default function MockInterview() {
       clearInterval(localTickRef.current);
     };
   }, []);
+
+  // ── Tab Switch / Visibility Detection (Proctoring) ──
+  useEffect(() => {
+    if (phase !== 'interview' || !sessionId) return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        // Tab switched away
+        setTabSwitchAlert(true);
+        setProctoringStats(prev => ({ ...prev, tabSwitches: prev.tabSwitches + 1 }));
+        mockAPI.logViolation(sessionId, {
+          violation_type: 'tab_switch',
+          duration_sec: 0,
+          details: 'Candidate switched tab or minimized window',
+        }).catch(() => {});
+        toast.error('Tab switch detected! Stay on the interview tab.', { duration: 4000 });
+      } else {
+        // Tab returned
+        setTimeout(() => setTabSwitchAlert(false), 3000);
+      }
+    };
+
+    const handleWindowBlur = () => {
+      if (phase === 'interview' && sessionId) {
+        setTabSwitchAlert(true);
+        setProctoringStats(prev => ({ ...prev, tabSwitches: prev.tabSwitches + 1 }));
+        mockAPI.logViolation(sessionId, {
+          violation_type: 'tab_switch',
+          duration_sec: 0,
+          details: 'Window lost focus',
+        }).catch(() => {});
+      }
+    };
+
+    const handleWindowFocus = () => {
+      setTimeout(() => setTabSwitchAlert(false), 3000);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [phase, sessionId]);
+
+  // ── Log gaze violations to backend ──
+  useEffect(() => {
+    if (phase !== 'interview' || !sessionId) return;
+
+    if (eyeTrackAlert && gazeState === 'WARNING_ACTIVE') {
+      // Gaze violation started
+      if (!gazeWarningStartRef.current) {
+        gazeWarningStartRef.current = Date.now();
+        setProctoringStats(prev => ({ ...prev, gazeViolations: prev.gazeViolations + 1 }));
+      }
+    } else if (gazeWarningStartRef.current) {
+      // Gaze violation ended — log duration
+      const duration = (Date.now() - gazeWarningStartRef.current) / 1000;
+      gazeWarningStartRef.current = null;
+      setProctoringStats(prev => ({ ...prev, totalAwayTime: prev.totalAwayTime + duration }));
+      mockAPI.logViolation(sessionId, {
+        violation_type: 'gaze_away',
+        duration_sec: Math.round(duration * 10) / 10,
+        details: `Looked away for ${Math.round(duration)}s`,
+      }).catch(() => {});
+    }
+  }, [eyeTrackAlert, gazeState, phase, sessionId]);
+
+  // ── Log multi-person alerts to backend ──
+  useEffect(() => {
+    if (phase !== 'interview' || !sessionId || !multiPersonAlert) return;
+
+    setProctoringStats(prev => ({ ...prev, multiPersonAlerts: prev.multiPersonAlerts + 1 }));
+    mockAPI.logViolation(sessionId, {
+      violation_type: 'multi_person',
+      duration_sec: 0,
+      details: 'Multiple persons detected in camera',
+    }).catch(() => {});
+  }, [multiPersonAlert, phase, sessionId]);
 
   // ── Re-attach camera stream when video element mounts ──
   useEffect(() => {
@@ -898,6 +988,57 @@ export default function MockInterview() {
       )}
       </>
       )}
+
+      {/* ── Proctoring Panel ─────────────────────── */}
+      <div className="mt-4 border-t border-gray-700 pt-4">
+        <h3 className="font-semibold mb-3 flex items-center gap-2 text-sm">
+          <Shield className="text-cyan-400" size={14} />
+          Proctoring
+        </h3>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-gray-400 flex items-center gap-1"><Eye size={10} /> Gaze Violations</span>
+            <span className={`text-[10px] font-bold ${proctoringStats.gazeViolations === 0 ? 'text-green-400' : proctoringStats.gazeViolations < 5 ? 'text-yellow-400' : 'text-red-400'}`}>
+              {proctoringStats.gazeViolations}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-gray-400 flex items-center gap-1"><UserX size={10} /> Multi-Person</span>
+            <span className={`text-[10px] font-bold ${proctoringStats.multiPersonAlerts === 0 ? 'text-green-400' : 'text-red-400'}`}>
+              {proctoringStats.multiPersonAlerts}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-gray-400 flex items-center gap-1"><MonitorX size={10} /> Tab Switches</span>
+            <span className={`text-[10px] font-bold ${proctoringStats.tabSwitches === 0 ? 'text-green-400' : proctoringStats.tabSwitches < 3 ? 'text-yellow-400' : 'text-red-400'}`}>
+              {proctoringStats.tabSwitches}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-gray-400 flex items-center gap-1"><Clock size={10} /> Away Time</span>
+            <span className="text-[10px] font-bold text-gray-300">
+              {Math.round(proctoringStats.totalAwayTime)}s
+            </span>
+          </div>
+          {/* Integrity indicator */}
+          {(() => {
+            const score = Math.max(0, 100 - (proctoringStats.gazeViolations * 3) - (proctoringStats.multiPersonAlerts * 15) - (proctoringStats.tabSwitches * 10) - (proctoringStats.totalAwayTime * 0.5));
+            return (
+              <div className="mt-2 bg-gray-800/60 rounded-lg p-2">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] text-gray-400">Integrity Score</span>
+                  <span className={`text-xs font-bold ${score >= 80 ? 'text-green-400' : score >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+                    {Math.round(score)}%
+                  </span>
+                </div>
+                <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                  <div className={`h-full rounded-full transition-all duration-500 ${score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${score}%` }} />
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      </div>
     </div>
 
     {/* ── Main Interview Content ───────────────────── */}
@@ -1003,6 +1144,14 @@ export default function MockInterview() {
                 <div className="bg-orange-600/95 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center space-x-2 shadow-lg">
                   <AlertTriangle size={18} />
                   <span>Multiple persons detected — only the candidate should be visible</span>
+                </div>
+              </div>
+            )}
+            {tabSwitchAlert && (
+              <div className="absolute inset-0 flex items-center justify-center bg-purple-900/50 backdrop-blur-[2px]">
+                <div className="bg-purple-600/95 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center space-x-2 shadow-lg animate-pulse">
+                  <MonitorX size={18} />
+                  <span>Tab switch detected!</span>
                 </div>
               </div>
             )}
