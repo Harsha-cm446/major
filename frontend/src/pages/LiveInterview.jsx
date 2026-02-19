@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import {
   Loader2, Users, Eye, ArrowLeft, RefreshCw, BarChart3,
   CheckCircle, Clock, AlertTriangle, FileText, XCircle, Timer,
-  Video, VideoOff, Monitor, X,
+  Video, VideoOff, Monitor, X, Shield, UserX, MonitorX,
 } from 'lucide-react';
 
 const ICE_SERVERS = [
@@ -137,16 +137,19 @@ export default function LiveInterview() {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConnectionRef.current = pc;
 
-    // Collect incoming streams — first is camera, second is screen
-    let streamCount = 0;
+    // Collect incoming streams — deduplicate by stream id
+    const seenStreams = new Set();
+    let streamIndex = 0;
     pc.ontrack = (event) => {
       const stream = event.streams[0];
-      if (streamCount === 0) {
+      if (!stream || seenStreams.has(stream.id)) return;
+      seenStreams.add(stream.id);
+      if (streamIndex === 0) {
         setCameraStream(stream);
       } else {
         setScreenStream(stream);
       }
-      streamCount++;
+      streamIndex++;
     };
 
     pc.onicecandidate = (event) => {
@@ -807,6 +810,40 @@ export default function LiveInterview() {
                   {c.latest_evaluation.feedback && (
                     <span className="text-gray-400 truncate max-w-md">{c.latest_evaluation.feedback}</span>
                   )}
+                </div>
+              )}
+
+              {/* Proctoring Stats */}
+              {c.proctoring && (c.proctoring.gaze_violations > 0 || c.proctoring.multi_person_alerts > 0 || c.proctoring.tab_switches > 0) && (
+                <div className="mt-3 flex items-center flex-wrap gap-3 text-xs">
+                  <div className="flex items-center space-x-1 text-gray-500">
+                    <Shield size={12} className="text-cyan-600" />
+                    <span className="font-medium">Proctoring:</span>
+                  </div>
+                  {c.proctoring.gaze_violations > 0 && (
+                    <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${c.proctoring.gaze_violations < 5 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                      <Eye size={10} /> Gaze: {c.proctoring.gaze_violations}
+                    </span>
+                  )}
+                  {c.proctoring.multi_person_alerts > 0 && (
+                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700">
+                      <UserX size={10} /> Multi-Person: {c.proctoring.multi_person_alerts}
+                    </span>
+                  )}
+                  {c.proctoring.tab_switches > 0 && (
+                    <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${c.proctoring.tab_switches < 3 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                      <MonitorX size={10} /> Tabs: {c.proctoring.tab_switches}
+                    </span>
+                  )}
+                  {(() => {
+                    const p = c.proctoring;
+                    const score = Math.max(0, 100 - ((p.gaze_violations || 0) * 3) - ((p.multi_person_alerts || 0) * 15) - ((p.tab_switches || 0) * 10) - ((p.total_away_time_sec || 0) * 0.5));
+                    return (
+                      <span className={`px-2 py-0.5 rounded-full font-bold ${score >= 80 ? 'bg-green-100 text-green-700' : score >= 50 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                        Integrity: {Math.round(score)}%
+                      </span>
+                    );
+                  })()}
                 </div>
               )}
             </div>

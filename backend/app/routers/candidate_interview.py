@@ -229,6 +229,13 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
         "technical_score": None,
         "hr_score": None,
         "processing_time_total": startup_processing,
+        "proctoring": {
+            "gaze_violations": 0,
+            "multi_person_alerts": 0,
+            "tab_switches": 0,
+            "total_away_time_sec": 0,
+            "violation_log": [],
+        },
         "created_at": started_at,
         "started_at": started_at,
     }
@@ -670,6 +677,7 @@ async def get_session_progress(session_id: str):
             "hr_score": ai_sess.get("hr_score"),
             "termination_reason": ai_sess.get("termination_reason"),
             "time_status": time_status,
+            "proctoring": ai_sess.get("proctoring", {}),
         })
 
     return results
@@ -715,3 +723,77 @@ async def _complete_candidate_session(db, ai_session: dict, candidate: dict, all
         rl_adaptation_service.cleanup_session(session_id)
     except Exception:
         pass
+
+
+# ── Proctoring Violation Logging ──────────────────────
+
+class CandidateProctoringViolationRequest(BaseModel):
+    violation_type: str  # "gaze_away", "multi_person", "tab_switch"
+    duration_sec: Optional[float] = 0
+    details: Optional[str] = ""
+
+
+@router.post("/{token}/proctoring/violation")
+async def log_candidate_proctoring_violation(token: str, body: CandidateProctoringViolationRequest):
+    """Log a proctoring violation for a candidate interview (token-based, no auth)."""
+    db = get_database()
+    await _get_candidate_by_token(token)
+    ai_session = await db.candidate_ai_sessions.find_one({"candidate_token": token})
+    if not ai_session:
+        raise HTTPException(status_code=404, detail="Interview not started")
+
+    violation_entry = {
+        "type": body.violation_type,
+        "timestamp": datetime.utcnow().isoformat(),
+        "duration_sec": body.duration_sec or 0,
+        "details": body.details or "",
+    }
+
+    inc_fields = {}
+    if body.violation_type == "gaze_away":
+        inc_fields["proctoring.gaze_violations"] = 1
+        inc_fields["proctoring.total_away_time_sec"] = body.duration_sec or 0
+    elif body.violation_type == "multi_person":
+        inc_fields["proctoring.multi_person_alerts"] = 1
+    elif body.violation_type == "tab_switch":
+        inc_fields["proctoring.tab_switches"] = 1
+
+    update_ops = {"$push": {"proctoring.violation_log": violation_entry}}
+    if inc_fields:
+        update_ops["$inc"] = inc_fields
+
+    await db.candidate_ai_sessions.update_one(
+        {"_id": ai_session["_id"]},
+        update_ops,
+    )
+
+    return {"status": "logged"}
+
+
+@router.get("/{token}/proctoring/summary")
+async def get_candidate_proctoring_summary(token: str):
+    """Get proctoring summary for a candidate interview."""
+    db = get_database()
+    await _get_candidate_by_token(token)
+    ai_session = await db.candidate_ai_sessions.find_one({"candidate_token": token})
+    if not ai_session:
+        raise HTTPException(status_code=404, detail="Interview not started")
+
+    proctoring = ai_session.get("proctoring", {})
+    gaze_v = proctoring.get("gaze_violations", 0)
+    multi_p = proctoring.get("multi_person_alerts", 0)
+    tab_s = proctoring.get("tab_switches", 0)
+    away_time = proctoring.get("total_away_time_sec", 0)
+
+    total_violations = gaze_v + multi_p + tab_s
+    integrity_score = max(0, 100 - (gaze_v * 3) - (multi_p * 15) - (tab_s * 10) - (away_time * 0.5))
+
+    return {
+        "gaze_violations": gaze_v,
+        "multi_person_alerts": multi_p,
+        "tab_switches": tab_s,
+        "total_away_time_sec": round(away_time, 1),
+        "total_violations": total_violations,
+        "integrity_score": round(integrity_score, 1),
+        "violation_log": proctoring.get("violation_log", [])[-20:],
+    }

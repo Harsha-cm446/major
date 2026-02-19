@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import {
   Mic, MicOff, Camera, Send, Loader2, User, Briefcase, Clock,
   CheckCircle, Volume2, VolumeX, Timer, AlertTriangle, XCircle, Code,
-  Monitor,
+  Monitor, Shield, UserX, MonitorX, Eye,
 } from 'lucide-react';
 
 const ICE_SERVERS = [
@@ -38,6 +38,13 @@ export default function CandidateJoin() {
   const [screenSharing, setScreenSharing] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [permissionError, setPermissionError] = useState('');
+
+  // Proctoring state
+  const [proctoringStats, setProctoringStats] = useState({
+    gazeViolations: 0, multiPersonAlerts: 0, tabSwitches: 0, totalAwayTime: 0,
+  });
+  const [tabSwitchAlert, setTabSwitchAlert] = useState(false);
+  const gazeWarningStartRef = useRef(null);
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -220,6 +227,52 @@ export default function CandidateJoin() {
       Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
     };
   }, []);
+
+  // ── Tab Switch / Visibility Detection (Proctoring) ──
+  useEffect(() => {
+    if (phase !== 'interview' || !token) return;
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        setTabSwitchAlert(true);
+        setProctoringStats(prev => ({ ...prev, tabSwitches: prev.tabSwitches + 1 }));
+        candidateAPI.logViolation(token, {
+          violation_type: 'tab_switch',
+          duration_sec: 0,
+          details: 'Candidate switched tab or minimized window',
+        }).catch(() => {});
+        toast.error('Tab switch detected! Stay on the interview tab.', { duration: 4000 });
+      } else {
+        setTimeout(() => setTabSwitchAlert(false), 3000);
+      }
+    };
+
+    const handleWindowBlur = () => {
+      if (phase === 'interview' && token) {
+        setTabSwitchAlert(true);
+        setProctoringStats(prev => ({ ...prev, tabSwitches: prev.tabSwitches + 1 }));
+        candidateAPI.logViolation(token, {
+          violation_type: 'tab_switch',
+          duration_sec: 0,
+          details: 'Window lost focus',
+        }).catch(() => {});
+      }
+    };
+
+    const handleWindowFocus = () => {
+      setTimeout(() => setTabSwitchAlert(false), 3000);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [phase, token]);
 
   // ── WebSocket for live streaming to HR ─────────────
   useEffect(() => {
@@ -739,6 +792,14 @@ export default function CandidateJoin() {
                   <span>AI Speaking...</span>
                 </div>
               )}
+              {tabSwitchAlert && (
+                <div className="absolute inset-0 flex items-center justify-center bg-purple-900/50 backdrop-blur-[2px]">
+                  <div className="bg-purple-600/95 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center space-x-2 shadow-lg animate-pulse">
+                    <MonitorX size={18} />
+                    <span>Tab switch detected!</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Screen share status */}
@@ -763,6 +824,57 @@ export default function CandidateJoin() {
                     {isSpeaking ? 'Speaking...' : 'Listening'}
                   </p>
                 </div>
+              </div>
+            </div>
+
+            {/* Proctoring Panel */}
+            <div className="mt-4 bg-white rounded-xl border border-gray-100 p-4">
+              <h3 className="font-semibold mb-3 flex items-center gap-2 text-sm text-gray-700">
+                <Shield className="text-cyan-600" size={14} />
+                Proctoring
+              </h3>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500 flex items-center gap-1"><Eye size={10} /> Gaze Violations</span>
+                  <span className={`text-xs font-bold ${proctoringStats.gazeViolations === 0 ? 'text-green-600' : proctoringStats.gazeViolations < 5 ? 'text-yellow-600' : 'text-red-600'}`}>
+                    {proctoringStats.gazeViolations}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500 flex items-center gap-1"><UserX size={10} /> Multi-Person</span>
+                  <span className={`text-xs font-bold ${proctoringStats.multiPersonAlerts === 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {proctoringStats.multiPersonAlerts}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500 flex items-center gap-1"><MonitorX size={10} /> Tab Switches</span>
+                  <span className={`text-xs font-bold ${proctoringStats.tabSwitches === 0 ? 'text-green-600' : proctoringStats.tabSwitches < 3 ? 'text-yellow-600' : 'text-red-600'}`}>
+                    {proctoringStats.tabSwitches}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500 flex items-center gap-1"><Clock size={10} /> Away Time</span>
+                  <span className="text-xs font-bold text-gray-700">
+                    {Math.round(proctoringStats.totalAwayTime)}s
+                  </span>
+                </div>
+                {/* Integrity indicator */}
+                {(() => {
+                  const score = Math.max(0, 100 - (proctoringStats.gazeViolations * 3) - (proctoringStats.multiPersonAlerts * 15) - (proctoringStats.tabSwitches * 10) - (proctoringStats.totalAwayTime * 0.5));
+                  return (
+                    <div className="mt-2 bg-gray-50 rounded-lg p-2">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs text-gray-500">Integrity Score</span>
+                        <span className={`text-xs font-bold ${score >= 80 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
+                          {Math.round(score)}%
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full transition-all duration-500 ${score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${score}%` }} />
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           </div>

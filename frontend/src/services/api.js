@@ -122,6 +122,9 @@ export const candidateAPI = {
   getPublicUrl: () => api.get('/candidate-interview/public-url'),
   checkTime: (token) => api.get(`/candidate-interview/${token}/time`),
   endInterview: (token) => api.post(`/candidate-interview/${token}/end`),
+  // Proctoring
+  logViolation: (token, data) => api.post(`/candidate-interview/${token}/proctoring/violation`, data),
+  getProctoringSummary: (token) => api.get(`/candidate-interview/${token}/proctoring/summary`),
 };
 
 export default api;
