@@ -316,6 +316,204 @@ export default function InterviewReport() {
         </ul>
       </div>
 
+      {/* ═══ AI-Powered Performance Analysis (Explainability) ═══ */}
+      {report.explainability && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
+          <h3 className="font-semibold text-indigo-700 mb-4">🔍 AI-Powered Performance Analysis</h3>
+
+          {/* Explanation text */}
+          {report.explainability.explanation && (
+            <p className="text-sm text-gray-700 mb-4 bg-indigo-50 p-3 rounded-lg">{report.explainability.explanation}</p>
+          )}
+
+          {/* Dimension scores */}
+          {report.explainability.dimension_scores && (
+            <div className="mb-5">
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">Dimension Breakdown</h4>
+              <div className="space-y-3">
+                {Object.entries(report.explainability.dimension_scores).map(([dim, data]) => {
+                  const score = data?.score || 0;
+                  const grade = data?.grade || 'N/A';
+                  const barColor = score >= 70 ? 'bg-green-500' : score >= 50 ? 'bg-yellow-500' : 'bg-red-500';
+                  const gradeColor = score >= 70 ? 'text-green-600' : score >= 50 ? 'text-yellow-600' : 'text-red-600';
+                  return (
+                    <div key={dim} className="flex items-center gap-3">
+                      <span className="text-sm font-medium text-gray-700 w-40">{dim}</span>
+                      <div className="flex-1 bg-gray-200 rounded-full h-2.5">
+                        <div className={`h-2.5 rounded-full ${barColor}`} style={{ width: `${Math.min(score, 100)}%` }} />
+                      </div>
+                      <span className={`text-sm font-bold w-12 text-right ${gradeColor}`}>{Math.round(score)}%</span>
+                      <span className={`text-xs font-medium ${gradeColor} w-28`}>{grade}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Top factors */}
+          <div className="grid md:grid-cols-2 gap-4 mb-4">
+            {report.explainability.top_positive_factors?.length > 0 && (
+              <div className="bg-green-50 rounded-lg p-4">
+                <h4 className="text-sm font-semibold text-green-700 mb-2">Key Strengths</h4>
+                {report.explainability.top_positive_factors.slice(0, 4).map((f, i) => (
+                  <div key={i} className="text-xs text-gray-700 flex justify-between py-0.5">
+                    <span>{f.feature?.replace(/_/g, ' ')?.replace(/\b\w/g, c => c.toUpperCase())}</span>
+                    <span className="text-green-600 font-medium">+{f.impact?.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {report.explainability.top_negative_factors?.length > 0 && (
+              <div className="bg-red-50 rounded-lg p-4">
+                <h4 className="text-sm font-semibold text-red-700 mb-2">Key Weaknesses</h4>
+                {report.explainability.top_negative_factors.slice(0, 4).map((f, i) => (
+                  <div key={i} className="text-xs text-gray-700 flex justify-between py-0.5">
+                    <span>{f.feature?.replace(/_/g, ' ')?.replace(/\b\w/g, c => c.toUpperCase())}</span>
+                    <span className="text-red-600 font-medium">{f.impact?.toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Targeted suggestions from explainability */}
+          {report.explainability.improvement_suggestions?.length > 0 && (
+            <div>
+              <h4 className="text-sm font-semibold text-gray-800 mb-2">Targeted Actions</h4>
+              <div className="space-y-2">
+                {report.explainability.improvement_suggestions.slice(0, 6).map((s, i) => {
+                  const pColor = s.priority === 'high' ? 'bg-red-100 text-red-700' : s.priority === 'medium' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600';
+                  return (
+                    <div key={i} className="border border-gray-100 rounded-lg p-3">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium uppercase ${pColor}`}>{s.priority}</span>
+                        <span className="text-xs font-semibold text-gray-800">{s.category}</span>
+                        <span className="text-xs text-gray-400 ml-auto">Current: {Math.round(s.current_score || 0)}%</span>
+                      </div>
+                      <p className="text-xs text-gray-600">{s.suggestion}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ═══ Development Roadmap ═══ */}
+      {report.development_roadmap && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
+          <h3 className="font-semibold text-indigo-700 mb-4">🗺️ Personalized Development Roadmap</h3>
+
+          {/* Profile summary */}
+          {report.development_roadmap.candidate_profile && (
+            <div className="flex flex-wrap gap-3 mb-4 text-xs text-gray-600">
+              <span className="bg-gray-100 px-3 py-1 rounded-full">
+                Target: {report.development_roadmap.candidate_profile.target_role || 'General'}
+              </span>
+              <span className="bg-gray-100 px-3 py-1 rounded-full">
+                Duration: {report.development_roadmap.candidate_profile.total_weeks || 8} weeks
+              </span>
+              <span className="bg-gray-100 px-3 py-1 rounded-full">
+                Current Score: {Math.round(report.development_roadmap.candidate_profile.overall_score || 0)}%
+              </span>
+            </div>
+          )}
+
+          {/* Dimension analysis */}
+          {report.development_roadmap.dimension_analysis && (() => {
+            const da = report.development_roadmap.dimension_analysis;
+            return (
+              <div className="flex flex-wrap gap-2 mb-5">
+                {da.weak_areas?.map(a => (
+                  <span key={a.name} className="text-xs bg-red-100 text-red-700 px-2 py-1 rounded-full">
+                    ⚠️ {a.name} ({Math.round(a.score)}%)
+                  </span>
+                ))}
+                {da.moderate_areas?.map(a => (
+                  <span key={a.name} className="text-xs bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full">
+                    📊 {a.name} ({Math.round(a.score)}%)
+                  </span>
+                ))}
+                {da.strong_areas?.map(a => (
+                  <span key={a.name} className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">
+                    ✅ {a.name} ({Math.round(a.score)}%)
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
+
+          {/* 4 Phases */}
+          <div className="space-y-4">
+            {report.development_roadmap.phases?.map((phase, i) => {
+              const phaseColors = [
+                { bg: 'bg-red-50', border: 'border-red-200', header: 'bg-red-600', text: 'text-red-700' },
+                { bg: 'bg-yellow-50', border: 'border-yellow-200', header: 'bg-yellow-500', text: 'text-yellow-700' },
+                { bg: 'bg-blue-50', border: 'border-blue-200', header: 'bg-blue-600', text: 'text-blue-700' },
+                { bg: 'bg-green-50', border: 'border-green-200', header: 'bg-green-600', text: 'text-green-700' },
+              ];
+              const c = phaseColors[i] || phaseColors[0];
+              return (
+                <details key={i} className={`${c.bg} rounded-xl border ${c.border} overflow-hidden`}>
+                  <summary className="px-5 py-3 cursor-pointer hover:opacity-90 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className={`${c.header} text-white text-xs px-3 py-1 rounded-full font-bold`}>
+                        Phase {phase.phase || i + 1}
+                      </span>
+                      <span className="font-semibold text-gray-900 text-sm">{phase.name}</span>
+                    </div>
+                    <span className="text-xs text-gray-500">{phase.duration_weeks} weeks • {phase.daily_commitment}</span>
+                  </summary>
+                  <div className="px-5 pb-4 space-y-2 border-t border-gray-100 pt-3">
+                    <p className="text-xs text-gray-600 italic">{phase.objective}</p>
+                    {phase.focus_areas?.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {phase.focus_areas.map((f, fi) => (
+                          <span key={fi} className={`text-[10px] ${c.text} bg-white/60 px-2 py-0.5 rounded-full`}>{f}</span>
+                        ))}
+                      </div>
+                    )}
+                    {phase.tasks?.length > 0 && (
+                      <ul className="space-y-1">
+                        {phase.tasks.slice(0, 5).map((t, ti) => (
+                          <li key={ti} className="text-xs text-gray-700 flex items-start gap-1">
+                            <span className={t.priority === 'high' ? 'text-red-500' : 'text-gray-400'}>
+                              {t.priority === 'high' ? '★' : '–'}
+                            </span>
+                            <span><strong>{t.title}:</strong> {t.description?.substring(0, 120)}{t.description?.length > 120 ? '...' : ''}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="text-[10px] text-gray-500 mt-1">Success criteria: {phase.success_criteria}</p>
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+
+          {/* Progress targets */}
+          {report.development_roadmap.progress_metrics?.length > 0 && (
+            <div className="mt-5 pt-4 border-t border-gray-100">
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">📈 Progress Targets</h4>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                {report.development_roadmap.progress_metrics.map((m, i) => (
+                  <div key={i} className="bg-gray-50 rounded-lg p-3 text-center">
+                    <div className="text-[10px] text-gray-500 font-medium mb-1">{m.dimension}</div>
+                    <div className="text-sm font-bold text-gray-800">
+                      {Math.round(m.baseline)}% → {Math.round(m.target)}%
+                    </div>
+                    <div className="text-[10px] text-indigo-600 mt-0.5">+{Math.round(m.improvement_needed)}% needed</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Question Breakdown with Round Filter */}
       <div className="space-y-4">
         <div className="flex items-center justify-between">

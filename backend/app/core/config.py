@@ -1,5 +1,4 @@
 from pydantic_settings import BaseSettings
-from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -31,9 +30,6 @@ class Settings(BaseSettings):
     # Public URL for emails/links (set to your machine's IP or ngrok URL)
     # e.g. http://192.168.1.100:5173 or https://abc123.ngrok.io
     PUBLIC_URL: str = ""
-
-    # Redis
-    REDIS_URL: Optional[str] = None
 
     class Config:
         env_file = ".env"

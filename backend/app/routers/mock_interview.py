@@ -579,9 +579,8 @@ async def update_practice_metrics(
     """
     partial_text = body.partial_text.strip()
 
-    # Don't return metrics if there's no answer text yet — avoids fake data
-    if not partial_text or len(partial_text) < 5:
-        return {"metrics": None, "suggestion": None}
+    # Always process video for gaze tracking, even without answer text
+    has_text = partial_text and len(partial_text) >= 5
 
     db = get_database()
     session = await db.mock_sessions.find_one({"_id": ObjectId(session_id)})
@@ -620,13 +619,15 @@ async def update_practice_metrics(
     # Generate live metrics via the practice service — pass the actual answer text and video
     result = practice_mode_service.update_live_metrics(
         practice_id,
-        partial_text=partial_text,
+        partial_text=partial_text if has_text else "",
         video_frame=video_frame_data,
     )
 
     return {
-        "metrics": result.get("metrics", {}),
-        "suggestion": result.get("suggestion"),
+        "metrics": result.get("metrics") if has_text else None,
+        "suggestion": result.get("suggestion") if has_text else None,
+        "gaze": result.get("gaze"),
+        "person_count": result.get("person_count", 0),
     }
 
 
@@ -709,3 +710,11 @@ async def _complete_session(db, session_id: str, session: dict):
             "hr_score": hr_score,
         }},
     )
+
+    # Clean up in-memory session data to prevent memory leaks
+    try:
+        ai_service.cleanup_session(session_id)
+        from app.services.rl_adaptation_service import rl_adaptation_service
+        rl_adaptation_service.cleanup_session(session_id)
+    except Exception:
+        pass

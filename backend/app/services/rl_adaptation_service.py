@@ -473,7 +473,15 @@ class RLAdaptationService:
         env = InterviewEnvironment(max_questions=max_questions)
         env.reset()
         self._session_envs[session_id] = env
+        # Prevent unbounded growth — evict oldest if > 500 sessions
+        if len(self._session_envs) > 500:
+            oldest = next(iter(self._session_envs))
+            del self._session_envs[oldest]
         return {"session_id": session_id, "status": "created"}
+
+    def cleanup_session(self, session_id: str):
+        """Remove a completed session to free memory."""
+        self._session_envs.pop(session_id, None)
 
     def get_next_action(
         self,

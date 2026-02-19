@@ -54,14 +54,15 @@ export default function MockInterview() {
   const [scoreHistory, setScoreHistory] = useState([]);
   const [microSuggestion, setMicroSuggestion] = useState('');
   const [eyeTrackAlert, setEyeTrackAlert] = useState(false);
-  const eyeTrackTimeoutRef = useRef(null);
+  const [gazeState, setGazeState] = useState('ATTENTIVE');
+  const [multiPersonAlert, setMultiPersonAlert] = useState(false);
 
   // Live conversation mode refs
   const silenceTimerRef = useRef(null);
   const autoListenRef = useRef(false);       // whether to auto-listen after AI speaks
   const isSubmittingRef = useRef(false);      // prevent double-submit
   const answerRef = useRef('');               // track answer for silence-submit
-  const doSubmitRef = useRef(null);           // ref to latest doSubmit (avoids stale closures)
+  const submitRef = useRef(null);            // always-latest submit function ref
   const SILENCE_TIMEOUT = 3500;               // ms of silence before auto-submit
 
   const videoRef = useRef(null);
@@ -136,8 +137,8 @@ export default function MockInterview() {
             recognitionRef.current = null;
           }
           setIsRecording(false);
-          // Use ref to always call the latest doSubmit
-          doSubmitRef.current(answerRef.current);
+          // Use ref to always call the latest submit function (avoids stale closure)
+          if (submitRef.current) submitRef.current();
         }
       }, SILENCE_TIMEOUT);
     };
@@ -229,26 +230,53 @@ export default function MockInterview() {
     }
   };
 
-  // ── Timer polling ──────────────────────────────────
+  // ── Timer: local 1-second countdown + periodic server sync ──
+  const localTickRef = useRef(null);
   useEffect(() => {
-    if (phase === 'interview' && sessionId) {
-      const pollTime = async () => {
-        try {
-          const res = await mockAPI.checkTime(sessionId);
-          setTimeStatus(res.data);
-          if (res.data.is_expired) {
-            // Force end
-            await mockAPI.endInterview(sessionId);
-            setPhase('done');
-            setEndReason('time_expired');
-            toast('Time is up! Interview ended.');
-          }
-        } catch {}
-      };
-      timeIntervalRef.current = setInterval(pollTime, 10000);
-      pollTime();
-      return () => clearInterval(timeIntervalRef.current);
-    }
+    if (phase !== 'interview' || !sessionId) return;
+
+    // Sync with the server for authoritative time
+    const pollTime = async () => {
+      try {
+        const res = await mockAPI.checkTime(sessionId);
+        setTimeStatus(res.data);
+        if (res.data.is_expired) {
+          await mockAPI.endInterview(sessionId);
+          setPhase('done');
+          setEndReason('time_expired');
+          toast('Time is up! Interview ended.');
+        }
+      } catch {}
+    };
+
+    // Local tick: decrement remaining_seconds every second for smooth UI
+    localTickRef.current = setInterval(() => {
+      setTimeStatus(prev => {
+        if (!prev || prev.is_expired) return prev;
+        const newSec = Math.max(0, (prev.remaining_seconds ?? 0) - 1);
+        const newMin = newSec / 60;
+        const elapsed = (prev.elapsed_minutes ?? 0) + 1 / 60;
+        const totalDur = (prev.elapsed_minutes ?? 0) + (prev.remaining_minutes ?? 0);
+        return {
+          ...prev,
+          remaining_seconds: newSec,
+          remaining_minutes: Math.round(newMin * 10) / 10,
+          elapsed_minutes: Math.round(elapsed * 10) / 10,
+          is_expired: newSec <= 0,
+          is_wrap_up: newSec > 0 && newMin < 2,
+          progress_pct: Math.min(100, Math.round((elapsed / Math.max(totalDur, 1)) * 1000) / 10),
+        };
+      });
+    }, 1000);
+
+    // Server sync every 30 seconds (authoritative) + initial fetch
+    timeIntervalRef.current = setInterval(pollTime, 30000);
+    pollTime();
+
+    return () => {
+      clearInterval(localTickRef.current);
+      clearInterval(timeIntervalRef.current);
+    };
   }, [phase, sessionId]);
 
   // ── Speak new questions via TTS ────────────────────
@@ -267,7 +295,7 @@ export default function MockInterview() {
       if (recognitionRef.current) recognitionRef.current.stop();
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       clearInterval(timeIntervalRef.current);
-      if (eyeTrackTimeoutRef.current) clearTimeout(eyeTrackTimeoutRef.current);
+      clearInterval(localTickRef.current);
     };
   }, []);
 
@@ -278,33 +306,65 @@ export default function MockInterview() {
     }
   }, [phase]);
 
-  // ── Live metrics polling (only after first answer submitted) ──
+  // ── Video frame capture helper (shared by both polling loops) ──
+  const captureVideoFrame = useCallback(() => {
+    if (!videoRef.current || !cameraOn) return null;
+    try {
+      const video = videoRef.current;
+      if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+      const canvas = document.createElement('canvas');
+      canvas.width = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, 320, 240);
+      return canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+    } catch {
+      return null;
+    }
+  }, [cameraOn]);
+
+  // ── Gaze monitoring: ALWAYS runs during interview (independent of answer text) ──
   useEffect(() => {
-    if (phase !== 'interview' || !sessionId) return;
-    // Don't poll until user has started typing/speaking an answer
-    if (!answer || answer.trim().length < 5) return;
-
-    // Helper: capture a video frame as a base64 JPEG
-    const captureVideoFrame = () => {
-      if (!videoRef.current || !cameraOn) return null;
-      try {
-        const video = videoRef.current;
-        if (video.videoWidth === 0 || video.videoHeight === 0) return null;
-        const canvas = document.createElement('canvas');
-        canvas.width = 320;  // Downscale for performance
-        canvas.height = 240;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, 320, 240);
-        return canvas.toDataURL('image/jpeg', 0.6).split(',')[1]; // base64 only
-      } catch {
-        return null;
+    if (phase !== 'interview' || !sessionId || !cameraOn) {
+      // Clear warning when not actively monitoring
+      if (phase !== 'interview') {
+        setEyeTrackAlert(false);
+        setGazeState('ATTENTIVE');
       }
-    };
+      return;
+    }
 
-    const fetchMetrics = async () => {
+    const pollGaze = async () => {
       try {
         const videoFrame = captureVideoFrame();
-        const { data } = await mockAPI.getPracticeMetrics(sessionId, answer, videoFrame);
+        if (!videoFrame) return; // No frame available
+        // Send frame with empty text — backend will still process gaze FSM
+        const { data } = await mockAPI.getPracticeMetrics(sessionId, '', videoFrame);
+        if (data.gaze) {
+          console.log('[GAZE]', data.gaze.state, 'warn:', data.gaze.show_warning, 'score:', data.gaze.gaze_score, 'look%:', data.gaze.looking_pct);
+          setGazeState(data.gaze.state || 'ATTENTIVE');
+          setEyeTrackAlert(!!data.gaze.show_warning);
+        }
+        // Multi-person detection
+        setMultiPersonAlert((data.person_count ?? 0) > 1);
+      } catch { /* ignore */ }
+    };
+
+    pollGaze();
+    const gazeInterval = setInterval(pollGaze, 2000);
+    return () => clearInterval(gazeInterval);
+  }, [phase, sessionId, cameraOn, captureVideoFrame]);
+
+  // ── Live metrics polling (runs during interview, uses answerRef to avoid churn) ──
+  useEffect(() => {
+    if (phase !== 'interview' || !sessionId) return;
+
+    const fetchMetrics = async () => {
+      const currentAnswer = answerRef.current;
+      if (!currentAnswer || currentAnswer.trim().length < 5) return; // skip until enough text
+      try {
+        const videoFrame = captureVideoFrame();
+        const { data } = await mockAPI.getPracticeMetrics(sessionId, currentAnswer, videoFrame);
         if (data.metrics) {
           setLiveMetrics(data.metrics);
           setMetricsHistory(prev => [
@@ -313,51 +373,19 @@ export default function MockInterview() {
           ]);
         }
         if (data.suggestion) setMicroSuggestion(data.suggestion);
+        // Also update gaze from this richer response
+        if (data.gaze) {
+          setGazeState(data.gaze.state || 'ATTENTIVE');
+          setEyeTrackAlert(!!data.gaze.show_warning);
+        }
+        // Multi-person detection
+        setMultiPersonAlert((data.person_count ?? 0) > 1);
       } catch { /* polling error — ignore */ }
     };
 
-    // Fetch immediately when answer changes meaningfully, then poll
-    fetchMetrics();
-    const interval = setInterval(fetchMetrics, 5000);
-
+    const interval = setInterval(fetchMetrics, 3000);
     return () => clearInterval(interval);
-  }, [phase, sessionId, answer, cameraOn]);
-
-  // ── Eye-tracking alert: warn when attention is low ──
-  useEffect(() => {
-    if (!liveMetrics || phase !== 'interview') {
-      setEyeTrackAlert(false);
-      return;
-    }
-
-    const attention = liveMetrics.attention ?? 100;
-    const ATTENTION_THRESHOLD = 40;
-
-    if (attention < ATTENTION_THRESHOLD) {
-      // Show alert after 3s of sustained low attention (avoid flicker)
-      if (!eyeTrackTimeoutRef.current) {
-        eyeTrackTimeoutRef.current = setTimeout(() => {
-          eyeTrackTimeoutRef.current = null; // Reset ref after firing
-          setEyeTrackAlert(true);
-          toast('👁️ Please look at the camera to maintain eye contact', { icon: '⚠️', duration: 3000 });
-        }, 3000);
-      }
-    } else {
-      // Attention recovered — clear alert immediately
-      if (eyeTrackTimeoutRef.current) {
-        clearTimeout(eyeTrackTimeoutRef.current);
-        eyeTrackTimeoutRef.current = null;
-      }
-      setEyeTrackAlert(false);
-    }
-
-    return () => {
-      if (eyeTrackTimeoutRef.current) {
-        clearTimeout(eyeTrackTimeoutRef.current);
-        eyeTrackTimeoutRef.current = null;
-      }
-    };
-  }, [liveMetrics?.attention, phase]);
+  }, [phase, sessionId, captureVideoFrame]);
 
   // ── Track scores for chart ─────────────────────────
   useEffect(() => {
@@ -486,11 +514,26 @@ export default function MockInterview() {
           setPhase('round_transition');
           setTimeout(() => {
             setPhase('interview');
-            moveToNextQuestion(res.data.next_question);
-          }, 2000);
+            setCurrentQuestion(res.data.next_question);
+            setQuestionNumber((prev) => prev + 1);
+            setAnswer('');
+            answerRef.current = '';
+            setCodeText('');
+            setEvaluation(null);
+            setLiveMetrics(null);
+            setMicroSuggestion('');
+          }, 3000);
         } else {
-          // Move to next question immediately — TTS will speak it
-          moveToNextQuestion(res.data.next_question);
+          setTimeout(() => {
+            setCurrentQuestion(res.data.next_question);
+            setQuestionNumber((prev) => prev + 1);
+            setAnswer('');
+            answerRef.current = '';
+            setCodeText('');
+            setEvaluation(null);
+            setLiveMetrics(null);
+            setMicroSuggestion('');
+          }, 3000);
         }
       }
     } catch (err) {
@@ -501,24 +544,13 @@ export default function MockInterview() {
     }
   };
 
-  // Move to next question — shared helper to reset state
-  const moveToNextQuestion = (nextQ) => {
-    setCurrentQuestion(nextQ);
-    setQuestionNumber((prev) => prev + 1);
-    setAnswer('');
-    answerRef.current = '';
-    setCodeText('');
-    setEvaluation(null);
-    setLiveMetrics(null);
-    setMicroSuggestion('');
-  };
-
-  // Keep doSubmitRef pointing to latest doSubmit (avoids stale closures in timers)
-  useEffect(() => { doSubmitRef.current = doSubmit; });
-
+  // Auto-submit triggered by silence detection
   const submitAnswerAuto = useCallback(() => {
-    doSubmitRef.current(answerRef.current);
-  }, []);
+    doSubmit(answerRef.current);
+  }, [currentQuestion, sessionId, codeText, codeLanguage, currentRound]);
+
+  // Keep submitRef always pointing to the latest auto-submit function
+  useEffect(() => { submitRef.current = submitAnswerAuto; }, [submitAnswerAuto]);
 
   // Manual submit (button click)
   const submitAnswer = () => doSubmit(answer);
@@ -957,6 +989,20 @@ export default function MockInterview() {
                 <div className="bg-red-600/90 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center space-x-2 shadow-lg">
                   <Eye size={18} />
                   <span>Look at the camera</span>
+                </div>
+              </div>
+            )}
+            {gazeState === 'RECOVERING' && !isSpeaking && (
+              <div className="absolute top-3 right-3 bg-yellow-500/90 text-white px-3 py-1 rounded-full text-xs font-medium flex items-center space-x-1 transition-opacity">
+                <Eye size={12} />
+                <span>Refocusing...</span>
+              </div>
+            )}
+            {multiPersonAlert && (
+              <div className="absolute bottom-3 left-3 right-3 flex items-center justify-center">
+                <div className="bg-orange-600/95 text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center space-x-2 shadow-lg">
+                  <AlertTriangle size={18} />
+                  <span>Multiple persons detected — only the candidate should be visible</span>
                 </div>
               </div>
             )}

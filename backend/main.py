@@ -22,16 +22,10 @@ from app.services.ai_service import ai_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # STARTUP — don't crash if external services are slow
-    try:
-        await connect_to_mongo()
-    except Exception as e:
-        print(f"⚠️ MongoDB connection failed on startup: {e}")
-        print("   App will retry on first request")
-    try:
-        await ai_service.warm_up()
-    except Exception as e:
-        print(f"⚠️ AI warm-up failed: {e}")
+    # STARTUP
+    await connect_to_mongo()
+    # Warm up AI models so first interview starts in < 3 seconds
+    await ai_service.warm_up()
     print("🚀 AI Interview Platform ready")
     yield
     # SHUTDOWN
@@ -47,17 +41,20 @@ app = FastAPI(
 )
 
 # ── CORS — allow frontend origin + local dev ─────────
-origins = [
-    "http://localhost:5173",
-    "http://localhost:3000",
-]
+origins = ["*"]
 if settings.FRONTEND_URL:
-    origins.append(settings.FRONTEND_URL)
+    origins = [
+        settings.FRONTEND_URL,
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ]
+    # Also allow any Render subdomain
+    if ".onrender.com" not in (settings.FRONTEND_URL or ""):
+        origins.append("https://*.onrender.com")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_origin_regex=r"https://.*\.onrender\.com",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -18,11 +18,13 @@ from typing import Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.database import get_database
 from app.core.config import settings
 from app.services.ai_service import ai_service
+from app.services.report_service import generate_pdf_report
 
 router = APIRouter(prefix="/api/candidate-interview", tags=["Candidate AI Interview"])
 
@@ -588,6 +590,30 @@ async def get_candidate_report(token: str):
     return report
 
 
+# ── GET /{token}/report/pdf ──────────────────────────
+
+@router.get("/{token}/report/pdf")
+async def get_candidate_report_pdf(token: str):
+    """Generate and download a PDF performance report for the candidate."""
+    db = get_database()
+    await _get_candidate_by_token(token)
+    ai_session = await db.candidate_ai_sessions.find_one({"candidate_token": token})
+
+    if not ai_session:
+        raise HTTPException(status_code=404, detail="Interview not started")
+
+    user_proxy = {"name": ai_session.get("candidate_name", "Candidate")}
+    report = await ai_service.generate_report(session=ai_session, user=user_proxy)
+    report["candidate_email"] = ai_session.get("candidate_email", "")
+
+    pdf_bytes = generate_pdf_report(report)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=report_{token[:8]}.pdf"},
+    )
+
+
 # ── GET /session/{session_id}/progress ────────────────
 
 @router.get("/session/{session_id}/progress")
@@ -680,3 +706,12 @@ async def _complete_candidate_session(db, ai_session: dict, candidate: dict, all
         {"_id": candidate["_id"]},
         {"$set": {"status": "completed"}},
     )
+
+    # Clean up in-memory session data to prevent memory leaks
+    try:
+        session_id = str(ai_session["_id"])
+        ai_service.cleanup_session(session_id)
+        from app.services.rl_adaptation_service import rl_adaptation_service
+        rl_adaptation_service.cleanup_session(session_id)
+    except Exception:
+        pass

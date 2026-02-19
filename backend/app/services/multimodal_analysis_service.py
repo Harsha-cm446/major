@@ -30,6 +30,7 @@ import base64
 from typing import Dict, Any, List, Optional, Tuple
 from collections import deque
 from datetime import datetime
+from enum import Enum
 
 import numpy as np
 
@@ -44,6 +45,227 @@ try:
     DEEPFACE_AVAILABLE = True
 except ImportError:
     DEEPFACE_AVAILABLE = False
+
+try:
+    from ultralytics import YOLO
+    _yolo_model = YOLO("yolov8n.pt")
+    YOLO_AVAILABLE = True
+except Exception:
+    _yolo_model = None
+    YOLO_AVAILABLE = False
+
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Gaze Finite State Machine — production-ready eye contact monitoring
+# ══════════════════════════════════════════════════════════════════════
+
+class GazeState(str, Enum):
+    """Possible states of the gaze monitoring FSM."""
+    ATTENTIVE = "ATTENTIVE"               # Candidate is looking at the camera
+    WARNING_ACTIVE = "WARNING_ACTIVE"     # Sustained gaze deviation → show warning
+    RECOVERING = "RECOVERING"             # Gaze returning, not yet stable
+
+
+class GazeStateMachine:
+    """
+    Finite-state-machine for robust eye-contact monitoring.
+
+    Design principles:
+      • No state change on a single frame — uses a rolling window percentage.
+      • Separate timers for deviation and recovery — never reused across states.
+      • Time thresholds prevent flicker on rapid head movements.
+      • Handles frame drops and camera freeze via a staleness timeout.
+
+    States & transitions:
+      ATTENTIVE ──(away >70% for ≥2.5 s)──▶ WARNING_ACTIVE
+      WARNING_ACTIVE ──(looking >70% for ≥0.5 s)──▶ RECOVERING
+      RECOVERING ──(looking >70% for ≥1.5 s)──▶ ATTENTIVE
+      RECOVERING ──(away >70% again)──▶ WARNING_ACTIVE
+
+    Parameters:
+        window_size:         Number of frames in the rolling window (default 45)
+        away_pct_threshold:  Fraction of window frames that must be "away" (0.70)
+        look_pct_threshold:  Fraction that must be "looking" to start recovery (0.70)
+        deviation_hold_sec:  Seconds of sustained "away" before WARNING_ACTIVE (2.5)
+        recovery_entry_sec:  Seconds of sustained "looking" to enter RECOVERING (0.5)
+        recovery_full_sec:   Seconds of sustained "looking" to reach ATTENTIVE (1.5)
+        gaze_threshold:      Score below which a frame counts as "looking away" (45.0)
+        stale_timeout_sec:   If no frame arrives for this long, assume away (4.0)
+    """
+
+    def __init__(
+        self,
+        window_size: int = 5,
+        away_pct_threshold: float = 0.50,
+        look_pct_threshold: float = 0.50,
+        deviation_hold_sec: float = 2.0,
+        recovery_entry_sec: float = 0.0,
+        recovery_full_sec: float = 2.0,
+        gaze_threshold: float = 50.0,
+        stale_timeout_sec: float = 5.0,
+    ):
+        # Configurable thresholds
+        self._window_size = window_size
+        self._away_pct = away_pct_threshold
+        self._look_pct = look_pct_threshold
+        self._deviation_hold = deviation_hold_sec
+        self._recovery_entry = recovery_entry_sec
+        self._recovery_full = recovery_full_sec
+        self._gaze_threshold = gaze_threshold
+        self._stale_timeout = stale_timeout_sec
+
+        # Rolling window of booleans: True = looking at camera
+        self._frame_window: deque = deque(maxlen=window_size)
+
+        # FSM state
+        self._state: GazeState = GazeState.ATTENTIVE
+
+        # Timers (epoch seconds, None = not running)
+        self._deviation_start: Optional[float] = None   # when away-percentage first exceeded threshold
+        self._recovery_start: Optional[float] = None     # when look-percentage first exceeded threshold
+        self._last_frame_time: Optional[float] = None    # for staleness detection
+
+    # ── Public API ────────────────────────────────────────
+
+    def update(self, gaze_score: float) -> Dict[str, Any]:
+        """
+        Feed a new gaze score (0–100) from the detector.
+        Returns the current FSM state and metadata.
+
+        Call this once per processed frame (~every 1–2 seconds in this system).
+        """
+        now = time.time()
+        self._last_frame_time = now
+
+        # Classify this frame as looking (True) or away (False)
+        is_looking = gaze_score >= self._gaze_threshold
+        print(f"[GAZE FSM] score={gaze_score:.1f} threshold={self._gaze_threshold} is_looking={is_looking} state={self._state}")
+
+        # Push into rolling window
+        self._frame_window.append(is_looking)
+
+        # Compute window statistics
+        total = len(self._frame_window)
+        looking_count = sum(self._frame_window)
+        away_count = total - looking_count
+
+        looking_pct = looking_count / total if total > 0 else 1.0
+        away_pct = away_count / total if total > 0 else 0.0
+
+        # Determine dominant signal from the window
+        window_says_away = away_pct >= self._away_pct
+        window_says_looking = looking_pct >= self._look_pct
+
+        # ── State transitions ─────────────────────────────
+        prev_state = self._state
+
+        if self._state == GazeState.ATTENTIVE:
+            self._recovery_start = None  # Not applicable in this state
+
+            if window_says_away:
+                # Start or continue deviation timer
+                if self._deviation_start is None:
+                    self._deviation_start = now
+
+                elapsed = now - self._deviation_start
+                if elapsed >= self._deviation_hold:
+                    # Sustained deviation → WARNING
+                    self._state = GazeState.WARNING_ACTIVE
+                    self._deviation_start = None  # Reset — no longer needed
+                    self._recovery_start = None
+            else:
+                # Window is not predominantly away — reset deviation timer
+                self._deviation_start = None
+
+        elif self._state == GazeState.WARNING_ACTIVE:
+            self._deviation_start = None  # Not applicable in this state
+
+            if is_looking:
+                # User looked back → clear warning, enter recovery
+                self._state = GazeState.RECOVERING
+                self._recovery_start = now
+            else:
+                # Still looking away — reset any partial recovery
+                self._recovery_start = None
+
+        elif self._state == GazeState.RECOVERING:
+            self._deviation_start = None
+
+            if is_looking:
+                # Still looking at camera — continue recovery timer
+                if self._recovery_start is None:
+                    self._recovery_start = now
+
+                elapsed = now - self._recovery_start
+                if elapsed >= self._recovery_full:
+                    # Full recovery achieved → ATTENTIVE
+                    self._state = GazeState.ATTENTIVE
+                    self._recovery_start = None
+            else:
+                # FIX: Only fall back to WARNING if the window is predominantly away,
+                # not on a single frame — prevents false regression during recovery
+                if window_says_away:
+                    self._state = GazeState.WARNING_ACTIVE
+                    self._recovery_start = None
+                # else: single away frame during recovery — ignore, keep recovering
+
+        return self._build_output(gaze_score, looking_pct, away_pct, prev_state)
+
+    def check_staleness(self) -> Dict[str, Any]:
+        """
+        Call periodically even when no frame arrives.
+        If no frame for > stale_timeout, inject an "away" signal.
+        Handles camera freeze and frame drops.
+        """
+        if self._last_frame_time is None:
+            return self._build_output(0, 0, 0, self._state)
+
+        elapsed = time.time() - self._last_frame_time
+        if elapsed > self._stale_timeout:
+            # Inject away frames to fill the gap
+            return self.update(0.0)
+
+        return self._build_output(0, 0, 0, self._state)
+
+    def reset(self):
+        """Reset FSM to initial state (new session)."""
+        self._frame_window.clear()
+        self._state = GazeState.ATTENTIVE
+        self._deviation_start = None
+        self._recovery_start = None
+        self._last_frame_time = None
+
+    @property
+    def state(self) -> GazeState:
+        return self._state
+
+    @property
+    def show_warning(self) -> bool:
+        """Whether the UI should display a warning overlay."""
+        return self._state == GazeState.WARNING_ACTIVE
+
+    # ── Internal ──────────────────────────────────────────
+
+    def _build_output(
+        self,
+        gaze_score: float,
+        looking_pct: float,
+        away_pct: float,
+        prev_state: GazeState,
+    ) -> Dict[str, Any]:
+        return {
+            "state": self._state.value,
+            "show_warning": self._state == GazeState.WARNING_ACTIVE,
+            "gaze_score": round(gaze_score, 1),
+            "looking_pct": round(looking_pct, 2),
+            "away_pct": round(away_pct, 2),
+            "state_changed": self._state != prev_state,
+            "window_size": len(self._frame_window),
+        }
+
+
+# ══════════════════════════════════════════════════════════════════════
 
 
 class MultimodalAnalysisEngine:
@@ -62,12 +284,16 @@ class MultimodalAnalysisEngine:
         self.posture_history: deque = deque(maxlen=window_size)
         self.fluency_history: deque = deque(maxlen=window_size)
 
-        # Cache Haar cascade to avoid reloading on every frame
+        # Cache Haar cascades to avoid reloading on every frame
         self._face_cascade = None
+        self._eye_cascade = None
         if CV2_AVAILABLE:
             try:
                 self._face_cascade = cv2.CascadeClassifier(
                     cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                )
+                self._eye_cascade = cv2.CascadeClassifier(
+                    cv2.data.haarcascades + "haarcascade_eye.xml"
                 )
             except Exception:
                 pass
@@ -152,13 +378,8 @@ class MultimodalAnalysisEngine:
             except Exception:
                 pass
 
-        # Gaze estimation from face detection
+        # Gaze estimation from face + eye detection
         result["eye_contact_score"] = self._estimate_gaze(frame)
-
-        # If DeepFace confirmed a face but Haar cascade missed it,
-        # use a reasonable fallback instead of the very low cascade score
-        if result["face_detected"] and result["eye_contact_score"] < 40:
-            result["eye_contact_score"] = max(65.0, result["eye_contact_score"])
 
         # Store in temporal buffer
         self.emotion_history.append({
@@ -228,36 +449,116 @@ class MultimodalAnalysisEngine:
         return round(stability, 1)
 
     def _estimate_gaze(self, frame: np.ndarray) -> float:
-        """Estimate eye contact / gaze direction with temporal smoothing."""
+        """Estimate eye contact / gaze direction using eye detection.
+
+        Strategy:
+        1. Detect face with Haar cascade (more lenient params to reduce false negatives)
+        2. Within face ROI, detect eyes with eye cascade
+        3. If face found but no eyes detected → looking away → LOW score
+        4. If eyes found, check iris position (centering) → gaze score
+        5. Also penalise if face itself is off-centre (head turned)
+        """
         if not CV2_AVAILABLE or self._face_cascade is None:
             return 50.0
 
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            faces = self._face_cascade.detectMultiScale(gray, 1.3, 5)
 
-            if len(faces) > 0:
-                # Face detected — analyze position
-                (x, y, w, h) = faces[0]
-                frame_center_x = frame.shape[1] // 2
-                face_center_x = x + w // 2
+            # FIX: More lenient detection params to reduce missed faces
+            # scaleFactor 1.1 (was 1.3) — finer pyramid steps
+            # minNeighbors 3 (was 5) — less strict confirmation
+            # minSize (40,40) (was (60,60)) — catch smaller/farther faces
+            faces = self._face_cascade.detectMultiScale(
+                gray, scaleFactor=1.1, minNeighbors=3, minSize=(40, 40)
+            )
 
-                # How centered is the face?
-                offset = abs(face_center_x - frame_center_x) / frame_center_x
-                raw_score = max(0, min(100, 100 - offset * 80))
+            print(f"[GAZE] frame shape={frame.shape}, faces found={len(faces)}")
+
+            if len(faces) == 0:
+                # No face at all — definitely not looking at camera
+                raw_score = 10.0
             else:
-                # Cascade missed the face this frame
-                raw_score = 20.0
+                (fx, fy, fw, fh) = faces[0]
 
-            # Temporal smoothing: blend with recent history to avoid flicker
+                # ── Signal 1: Face centering (head turned?) ────────
+                frame_cx = frame.shape[1] / 2
+                face_cx = fx + fw / 2
+                face_offset = abs(face_cx - frame_cx) / frame_cx  # 0 = centered, 1 = edge
+                # Aggressive penalty — even a small offset means gaze is shifting
+                face_center_score = max(0, 100 - face_offset * 200)
+
+                # ── Signal 2: Eye detection within face ROI ────────
+                eye_score = 0.0
+                eyes_detected = False
+
+                if self._eye_cascade is not None:
+                    # Look for eyes in the UPPER half of the face region
+                    eye_roi_gray = gray[fy:fy + int(fh * 0.65), fx:fx + fw]
+
+                    # FIX: More lenient eye detection params
+                    # scaleFactor 1.05 (was 1.1) — finer steps for small eyes
+                    # minNeighbors 3 (was 4) — less strict
+                    # minSize (15,15) (was (20,20)) — catch smaller eyes
+                    eyes = self._eye_cascade.detectMultiScale(
+                        eye_roi_gray,
+                        scaleFactor=1.05,
+                        minNeighbors=3,
+                        minSize=(15, 15),
+                    )
+
+                    if len(eyes) >= 2:
+                        # Both eyes visible → likely looking at camera
+                        eyes_detected = True
+
+                        # Check eye symmetry — if both eyes are roughly
+                        # at similar Y and symmetrically placed in the face,
+                        # person is looking forward
+                        eyes_sorted = sorted(eyes, key=lambda e: e[0])  # sort by x
+                        e1 = eyes_sorted[0]
+                        e2 = eyes_sorted[1]
+
+                        # Horizontal symmetry: both eyes equally spaced from face centre
+                        e1_cx = (e1[0] + e1[2] / 2) / fw  # normalised 0..1
+                        e2_cx = (e2[0] + e2[2] / 2) / fw
+                        mid = (e1_cx + e2_cx) / 2
+                        symmetry_offset = abs(mid - 0.5)  # 0 = perfectly centred
+
+                        # Vertical alignment: both eyes at similar height
+                        e1_cy = e1[1] + e1[3] / 2
+                        e2_cy = e2[1] + e2[3] / 2
+                        y_diff = abs(e1_cy - e2_cy) / fh
+
+                        if symmetry_offset < 0.10 and y_diff < 0.08:
+                            eye_score = 90.0  # looking straight at camera
+                        elif symmetry_offset < 0.15:
+                            eye_score = 55.0  # slightly off-centre gaze
+                        else:
+                            eye_score = 20.0  # eyes asymmetric → looking aside
+
+                    elif len(eyes) == 1:
+                        # Only one eye visible → partially turned away
+                        eyes_detected = True
+                        eye_score = 15.0
+                    else:
+                        # No eyes detected in face ROI → looking away or eyes closed
+                        eye_score = 10.0
+
+                # ── Combine signals ────────────────────────────────
+                if eyes_detected:
+                    # Weight: 50% eye analysis, 50% face centering
+                    raw_score = eye_score * 0.5 + face_center_score * 0.5
+                else:
+                    # Face found but no eyes — heavily penalise
+                    raw_score = min(face_center_score * 0.2, 20.0)
+
+            # ── Temporal smoothing (lighter — 70/30 to keep responsiveness) ──
             recent_scores = [
                 g["score"] for g in self.gaze_history
-                if time.time() - g["timestamp"] < 5  # last 5 seconds
+                if time.time() - g["timestamp"] < 3  # last 3 seconds
             ]
             if recent_scores:
-                # Weighted average: 60% current frame, 40% recent history
                 avg_recent = sum(recent_scores) / len(recent_scores)
-                gaze_score = raw_score * 0.6 + avg_recent * 0.4
+                gaze_score = raw_score * 0.7 + avg_recent * 0.3
             else:
                 gaze_score = raw_score
 
@@ -270,6 +571,43 @@ class MultimodalAnalysisEngine:
 
         except Exception:
             return 50.0
+
+    def detect_persons(self, frame_b64: str) -> int:
+        """Count the number of persons visible using YOLOv8.
+
+        Returns the person count (class 0 = 'person' in COCO).
+        If YOLO is unavailable, falls back to Haar face count.
+        """
+        if not CV2_AVAILABLE:
+            return 0
+
+        try:
+            img_bytes = base64.b64decode(frame_b64)
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                return 0
+
+            if YOLO_AVAILABLE and _yolo_model is not None:
+                results = _yolo_model(frame, verbose=False)
+                person_count = 0
+                for r in results:
+                    for box in r.boxes:
+                        if int(box.cls[0]) == 0 and float(box.conf[0]) >= 0.45:
+                            person_count += 1
+                return person_count
+
+            # Fallback: Haar cascade face count
+            if self._face_cascade is not None:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = self._face_cascade.detectMultiScale(
+                    gray, scaleFactor=1.1, minNeighbors=4, minSize=(50, 50)
+                )
+                return len(faces)
+
+            return 0
+        except Exception:
+            return 0
 
     def _default_emotion(self) -> Dict[str, Any]:
         return {

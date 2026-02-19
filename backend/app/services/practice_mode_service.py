@@ -21,7 +21,7 @@ from collections import deque
 import numpy as np
 
 from app.services.ai_service import ai_service
-from app.services.multimodal_analysis_service import multimodal_engine
+from app.services.multimodal_analysis_service import multimodal_engine, GazeStateMachine
 from app.services.explainability_service import explainability_service
 from app.services.development_roadmap_service import development_roadmap_service
 
@@ -123,6 +123,8 @@ class PracticeModeService:
 
     def __init__(self):
         self._active_sessions: Dict[str, Dict[str, Any]] = {}
+        # Per-session gaze FSMs — keyed by session_id
+        self._gaze_fsms: Dict[str, GazeStateMachine] = {}
 
     def start_practice_session(
         self,
@@ -199,7 +201,7 @@ class PracticeModeService:
         """Update real-time metrics from multimodal input.
 
         Called frequently (every 1-2 seconds) during practice.
-        Returns updated live metrics for the dashboard.
+        Returns updated live metrics + gaze FSM state for the dashboard.
         """
         session = self._active_sessions.get(session_id)
         if not session or session["status"] != "active":
@@ -207,12 +209,24 @@ class PracticeModeService:
 
         current_metrics = session["live_metrics"].copy()
 
+        # Ensure a gaze FSM exists for this session
+        if session_id not in self._gaze_fsms:
+            self._gaze_fsms[session_id] = GazeStateMachine()
+
+        gaze_fsm = self._gaze_fsms[session_id]
+        gaze_state_output = None
+        person_count = 0
+
         # Process multimodal inputs if available
         if video_frame is not None:
             try:
                 visual = multimodal_engine.analyze_face(video_frame)
+
+                # YOLO / Haar person count
+                person_count = multimodal_engine.detect_persons(video_frame)
+
                 if visual.get("face_detected"):
-                    # Real face analysis data available
+                    # Real face analysis data available (DeepFace succeeded)
                     current_metrics["confidence"] = visual.get(
                         "confidence_score", current_metrics["confidence"]
                     )
@@ -224,15 +238,22 @@ class PracticeModeService:
                     )
                     current_metrics["stress"] = max(0, min(100, 100 - current_metrics["emotional_stability"]))
                 else:
-                    # Camera is on but no advanced CV — provide naturalish variation
-                    # so the dashboard isn't stuck at static defaults
+                    # DeepFace unavailable — but eye_contact_score from
+                    # Haar cascade gaze estimation is still valid; use it
+                    # so the gaze FSM gets accurate attention readings.
+                    eye_score = visual.get("eye_contact_score")
+                    if eye_score is not None:
+                        current_metrics["attention"] = eye_score
+                    else:
+                        # Fallback: no gaze data at all (CV2 unavailable)
+                        current_metrics["attention"] = np.clip(
+                            current_metrics["attention"] * 0.7 + np.random.uniform(-3, 3), 10, 40
+                        )
+                    # Other metrics: gentle jitter around current values
                     t = time.time()
                     jitter = np.sin(t * 0.3) * 5 + np.random.uniform(-3, 3)
                     current_metrics["confidence"] = np.clip(
                         current_metrics["confidence"] + jitter, 30, 90
-                    )
-                    current_metrics["attention"] = np.clip(
-                        current_metrics["attention"] + np.random.uniform(-4, 4), 40, 95
                     )
                     current_metrics["emotional_stability"] = np.clip(
                         current_metrics["emotional_stability"] + np.random.uniform(-3, 3), 40, 90
@@ -240,8 +261,17 @@ class PracticeModeService:
                     current_metrics["stress"] = np.clip(
                         100 - current_metrics["emotional_stability"] + np.random.uniform(-5, 5), 10, 60
                     )
+
+                # Feed the raw gaze score into the FSM (BEFORE EMA smoothing)
+                raw_attention = current_metrics["attention"]
+                gaze_state_output = gaze_fsm.update(raw_attention)
+
             except Exception:
-                pass
+                # On error, check staleness to keep FSM responsive
+                gaze_state_output = gaze_fsm.check_staleness()
+        else:
+            # No video frame this tick — check for camera freeze / dropped frames
+            gaze_state_output = gaze_fsm.check_staleness()
 
         if audio_chunk is not None:
             try:
@@ -301,6 +331,11 @@ class PracticeModeService:
         return {
             "metrics": current_metrics,
             "suggestion": suggestion,
+            "gaze": gaze_state_output or {
+                "state": gaze_fsm.state.value,
+                "show_warning": gaze_fsm.show_warning,
+            },
+            "person_count": person_count,
         }
 
     def _generate_micro_suggestion(self, metrics: Dict[str, float]) -> Optional[str]:
@@ -467,6 +502,9 @@ class PracticeModeService:
 
         session["status"] = "completed"
         session["ended_at"] = datetime.utcnow().isoformat()
+
+        # Clean up gaze FSM for this session
+        self._gaze_fsms.pop(session_id, None)
 
         scores = session["scores"]
         overall_score = float(np.mean(scores)) if scores else 0

@@ -11,14 +11,6 @@ services:
       - mongo_data:/data/db
     restart: unless-stopped
 
-  # ── Redis (optional) ──────────
-  redis:
-    image: redis:7-alpine
-    container_name: interview_redis
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-
   # ── Backend API ────────────────
   backend:
     build: ./backend
@@ -29,10 +21,8 @@ services:
       - ./backend/.env
     depends_on:
       - mongodb
-      - redis
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
-      - REDIS_URL=redis://redis:6379
     restart: unless-stopped
 
 volumes:

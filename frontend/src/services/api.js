@@ -1,17 +1,12 @@
 import axios from 'axios';
 
-// In production, VITE_API_URL should be set to the Render backend URL
-// e.g. https://ai-interview-backend.onrender.com/api
+// In production, VITE_API_URL should be set to the Render backend URL (e.g. https://your-backend.onrender.com/api)
 // In development, Vite proxy handles /api → localhost:8000
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
 // WebSocket base URL: in production, point to the backend service directly
 // VITE_WS_URL should be like wss://ai-interview-backend.onrender.com
-// If not set, auto-derive from VITE_API_URL (https→wss, strip /api suffix)
-export const WS_BASE = import.meta.env.VITE_WS_URL ||
-  (import.meta.env.VITE_API_URL
-    ? import.meta.env.VITE_API_URL.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/api\/?$/, '')
-    : '');
+export const WS_BASE = import.meta.env.VITE_WS_URL || '';
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -119,6 +114,7 @@ export const candidateAPI = {
   start: (token, data) => api.post(`/candidate-interview/${token}/start`, data),
   submitAnswer: (token, data) => api.post(`/candidate-interview/${token}/answer`, data),
   getReport: (token) => api.get(`/candidate-interview/${token}/report`),
+  getReportPDF: (token) => api.get(`/candidate-interview/${token}/report/pdf`, { responseType: 'blob' }),
   getSessionProgress: (sessionId) => api.get(`/candidate-interview/session/${sessionId}/progress`),
   getPublicUrl: () => api.get('/candidate-interview/public-url'),
   checkTime: (token) => api.get(`/candidate-interview/${token}/time`),

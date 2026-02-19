@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { LogOut, User, Menu, X, Sparkles, Settings } from 'lucide-react';
+import { LogOut, User, Menu, X, Sparkles, Settings, Database } from 'lucide-react';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
@@ -58,6 +58,9 @@ export default function Navbar() {
                     </Link>
                     <Link to="/mock-interview" className={navLinkClass('/mock-interview')}>
                       Practice
+                    </Link>
+                    <Link to="/profile-builder" className={navLinkClass('/profile-builder')}>
+                      Profile Builder
                     </Link>
                   </>
                 )}
@@ -125,6 +128,7 @@ export default function Navbar() {
                   <>
                     <Link to="/dashboard" onClick={() => setOpen(false)} className="block px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-xl">Dashboard</Link>
                     <Link to="/mock-interview" onClick={() => setOpen(false)} className="block px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-xl">Practice</Link>
+                    <Link to="/profile-builder" onClick={() => setOpen(false)} className="block px-4 py-3 text-gray-700 hover:bg-gray-50 rounded-xl">Profile Builder</Link>
                   </>
                 )}
                 {(user.role === 'hr' || user.role === 'admin') && (

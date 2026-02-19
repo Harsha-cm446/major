@@ -124,14 +124,12 @@ class DataCollectionService:
     """Multi-source candidate profiling and feature engineering pipeline."""
 
     def __init__(self):
-        self._embedding_model = None
         self._http_client: Optional[httpx.AsyncClient] = None
 
     @property
-    def embedding_model(self):
-        if self._embedding_model is None and ST_AVAILABLE:
-            self._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        return self._embedding_model
+    def embedding_model(self) -> Optional[SentenceTransformer]:
+        from app.services.model_registry import model_registry
+        return model_registry.embedding_model
 
     @property
     def http_client(self) -> httpx.AsyncClient:

@@ -18,17 +18,18 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 import numpy as np
-
-try:
-    from sentence_transformers import SentenceTransformer
-    from sklearn.metrics.pairwise import cosine_similarity
-    ST_AVAILABLE = True
-except ImportError:
-    ST_AVAILABLE = False
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
 
 import google.genai as genai
 from google.genai import types as genai_types
 from app.core.config import settings
+
+# Import services for report enrichment and integrated AI subsystems
+from app.services.explainability_service import explainability_service
+from app.services.development_roadmap_service import development_roadmap_service
+from app.services.question_generation_service import question_generation_service
+from app.services.rl_adaptation_service import rl_adaptation_service
 
 
 # ── Master system prompt injected into every LLM call ──────
@@ -70,18 +71,36 @@ IDEAL ANSWER QUALITY:
 class AIService:
     """High-performance AI interview engine with warm-loaded models and parallel evaluation."""
 
+    # Maximum cached questions / session counts before cleanup
+    _MAX_CACHE_SIZE = 200
+    _MAX_SESSION_COUNTS = 500
+
     def __init__(self):
-        self._embedding_model = None
-        self._gemini_client = None
         self._warmed_up = False
         self._warmup_lock = asyncio.Lock()
         # Cache for pre-generated questions
         self._question_cache: Dict[str, Dict] = {}
+        # Track question counts per session for the smart router
+        self._session_question_counts: Dict[str, int] = {}
+
+    def cleanup_session(self, session_id: str):
+        """Remove session-scoped data to prevent memory leaks."""
+        self._session_question_counts.pop(session_id, None)
+        # Remove any stale cached questions for this session
+        keys_to_remove = [k for k in self._question_cache if session_id in k]
+        for k in keys_to_remove:
+            self._question_cache.pop(k, None)
+        # Enforce global caps
+        if len(self._question_cache) > self._MAX_CACHE_SIZE:
+            # Evict oldest entries (FIFO)
+            excess = len(self._question_cache) - self._MAX_CACHE_SIZE
+            for k in list(self._question_cache.keys())[:excess]:
+                del self._question_cache[k]
 
     # ── Warm-up: Load models once at startup ──────────
 
     async def warm_up(self):
-        """Lightweight startup — initialize Gemini client."""
+        """Lightweight startup — initialize shared model registry."""
         if self._warmed_up:
             return
         async with self._warmup_lock:
@@ -89,12 +108,11 @@ class AIService:
                 return
             print("🔄 Initializing AI service...")
 
-            # 1. Skip embedding model at startup — loads on first use
-            # This saves ~400MB RAM, critical for Render free tier (512MB)
+            # Use shared model registry (single instance for all services)
+            from app.services.model_registry import model_registry
+            model_registry.warm_up()
 
-            # 2. Configure Google Gemini
-            if settings.GEMINI_API_KEY:
-                self._gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            if model_registry.gemini_client:
                 print(f"  ✅ Gemini configured (model: {settings.GEMINI_MODEL})")
             else:
                 print("  ⚠️ GEMINI_API_KEY not set — LLM calls will return empty results")
@@ -107,26 +125,20 @@ class AIService:
         pass  # Gemini SDK doesn't require explicit cleanup
 
     @property
-    def embedding_model(self):
-        if not ST_AVAILABLE:
-            return None
-        if self._embedding_model is None:
-            try:
-                self._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-            except Exception:
-                return None
-        return self._embedding_model
+    def embedding_model(self) -> SentenceTransformer:
+        from app.services.model_registry import model_registry
+        return model_registry.embedding_model
 
     # ── Gemini helpers ────────────────────────────────
 
     async def _gemini_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
         """Call Google Gemini API. fast=True uses lower token limit."""
-        if not self._gemini_client:
-            if settings.GEMINI_API_KEY:
-                self._gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            else:
-                print("Gemini error: GEMINI_API_KEY not configured")
-                return ""
+        from app.services.model_registry import model_registry
+        client = model_registry.gemini_client
+        if not client:
+            print("Gemini error: GEMINI_API_KEY not configured")
+            return ""
+        self._gemini_client = client
 
         full_system = MASTER_SYSTEM_PROMPT + "\n\n" + system
         max_tokens = 512 if fast else 2048
@@ -206,8 +218,116 @@ Return ONLY a JSON object:
         last_score: float = None,
         jd_analysis: Dict[str, Any] = None,
         is_coding_question: bool = False,
+        session_id: str = None,
     ) -> Dict[str, Any]:
-        """Generate a single adaptive interview question."""
+        """Generate an adaptive interview question using specialized generators
+        with RL-based difficulty calibration and redundancy checking."""
+
+        # ── RL-based difficulty adaptation ──
+        calibrated_difficulty = difficulty
+        try:
+            if session_id:
+                # Create RL session if first question
+                q_num = self._session_question_counts.get(session_id, 0)
+                if q_num == 0:
+                    rl_adaptation_service.create_session(session_id, max_questions=15)
+                self._session_question_counts[session_id] = q_num + 1
+
+                # Get RL recommendation
+                perf = (last_score / 100.0) if last_score is not None else 0.5
+                action = rl_adaptation_service.get_next_action(
+                    session_id,
+                    confidence=perf,
+                    performance=perf,
+                    stress=max(0, 1 - perf),
+                )
+                calibrated_difficulty = action.get("recommended_difficulty", difficulty)
+
+                # Also record last score for RL learning
+                if last_score is not None and q_num > 0:
+                    rl_adaptation_service.record_response(session_id, last_score / 100.0)
+        except Exception as e:
+            print(f"[RL adaptation] Falling back to heuristic difficulty: {e}")
+            calibrated_difficulty = difficulty
+
+        # Also use question_generation_service's difficulty calibration as a cross-check
+        if last_score is not None:
+            recent_scores = [last_score]
+            if previous_answers:
+                recent_scores = [last_score]  # Could track more history
+            cal_diff = question_generation_service.calibrate_difficulty(
+                calibrated_difficulty, recent_scores
+            )
+            calibrated_difficulty = cal_diff
+
+        # ── Route to specialized question generator ──
+        try:
+            q_num = self._session_question_counts.get(session_id or "", 1)
+            total_planned = 15
+
+            question_data = await question_generation_service.generate_question_smart(
+                job_role=job_role,
+                difficulty=calibrated_difficulty,
+                previous_questions=previous_questions,
+                round_type=round_type,
+                question_number=q_num,
+                total_planned=total_planned,
+                jd_analysis=jd_analysis,
+                last_score=last_score,
+                last_answer=previous_answers[-1] if previous_answers else None,
+            )
+
+            # Redundancy check using sentence embeddings
+            if question_data and question_data.get("question"):
+                is_redundant = question_generation_service.check_question_redundancy(
+                    question_data["question"], previous_questions, threshold=0.75
+                )
+                if is_redundant:
+                    print("[QuestionGen] Redundancy detected, falling back to monolithic generator")
+                    question_data = None  # Fall through to the fallback
+
+            if question_data and question_data.get("question"):
+                # Evaluate quality
+                quality = question_generation_service.evaluate_question_quality(question_data)
+                if quality.get("overall_quality", 100) < 40:
+                    print(f"[QuestionGen] Low quality ({quality.get('overall_quality')}), falling back")
+                    question_data = None  # Fall through
+
+        except Exception as e:
+            print(f"[QuestionGen] Smart router failed, using fallback: {e}")
+            question_data = None
+
+        # ── Fallback: monolithic Gemini generator (original logic) ──
+        if not question_data or "question" not in question_data:
+            question_data = await self._generate_question_fallback(
+                job_role, calibrated_difficulty, previous_questions,
+                round_type, job_description, experience_level,
+                previous_answers, last_score, jd_analysis, is_coding_question,
+            )
+
+        question_data.setdefault("round", round_type)
+        question_data.setdefault("evaluation_keywords", question_data.get("keywords", ["experience", "skills"]))
+        question_data.setdefault("difficulty_level", calibrated_difficulty)
+        question_data.setdefault("is_coding", False)
+        question_data.setdefault("followup_trigger_conditions", {})
+        question_data["keywords"] = question_data["evaluation_keywords"]
+
+        return question_data
+
+    async def _generate_question_fallback(
+        self,
+        job_role: str,
+        difficulty: str,
+        previous_questions: List[str],
+        round_type: str = "Technical",
+        job_description: str = "",
+        experience_level: str = "",
+        previous_answers: List[str] = None,
+        last_score: float = None,
+        jd_analysis: Dict[str, Any] = None,
+        is_coding_question: bool = False,
+    ) -> Dict[str, Any]:
+        """Fallback monolithic question generator using direct Gemini call."""
 
         prev_q_text = "\n".join(f"- {q}" for q in previous_questions[-30:]) if previous_questions else "None"
         prev_a_text = ""
@@ -269,26 +389,36 @@ Previously asked questions (DO NOT repeat these or ask semantically similar ques
 {followup_instruction}
 {coding_instruction}
 
-IMPORTANT: Create a UNIQUE question that is DIFFERENT from all previously asked questions above.
-Approach this from the angle of: {chosen_angle}.
-Variety seed: {variety_seed} — use this to add creative variation.
+CRITICAL RULES:
+1. The question MUST be SHORT and CONCISE — ideally 1-2 sentences (max 30 words).
+2. Do NOT add long preambles, context paragraphs, or multi-part questions.
+3. Ask ONE clear thing. Examples of GOOD questions:
+   - "What is the difference between an abstract class and an interface?"
+   - "How would you optimize a slow database query?"
+   - "Tell me about a time you resolved a team conflict."
+4. BAD questions are overly long, multi-part, or contain unnecessary context.
+5. The ideal_answer should be a concise model answer (3-5 sentences).
+6. Create a UNIQUE question DIFFERENT from all previously asked questions.
+7. Approach this from the angle of: {chosen_angle}.
+
+Variety seed: {variety_seed}
 
 Return ONLY a JSON object in this exact format:
 {{
   "round": "{round_type}",
-  "question": "Your interview question here",
-  "ideal_answer": "The ideal comprehensive answer",
+  "question": "Your SHORT interview question here (1-2 sentences max)",
+  "ideal_answer": "Concise ideal answer (3-5 sentences)",
   "evaluation_keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
   "difficulty_level": "{difficulty}",
   "is_coding": false,
   "followup_trigger_conditions": {{
-    "strong_answer": "Follow-up if candidate scores >80%",
-    "moderate_answer": "Follow-up if candidate scores 50-80%",
-    "weak_answer": "Fallback if candidate scores <50%"
+    "strong_answer": "Harder follow-up question (1 sentence)",
+    "moderate_answer": "Clarification follow-up (1 sentence)",
+    "weak_answer": "Simpler fallback question (1 sentence)"
   }}
 }}"""
 
-        system = f"You are an expert {round_type} interviewer. Generate relevant, professional questions strictly aligned with the job description. Always return valid JSON."
+        system = f"You are an expert {round_type} interviewer. Generate SHORT, CONCISE, and relevant questions (1-2 sentences max). Never write long or multi-part questions. Always return valid JSON."
 
         response = await self._gemini_generate(prompt, system)
         parsed = self._parse_json_from_response(response)
@@ -296,21 +426,25 @@ Return ONLY a JSON object in this exact format:
         if not parsed or "question" not in parsed:
             if round_type == "HR":
                 fallback_questions = [
-                    "Tell me about a time when you had to handle a conflict with a team member.",
-                    "What motivates you to excel in your career?",
-                    "Describe a situation where you demonstrated leadership.",
+                    "Tell me about a time you handled a conflict in your team.",
+                    "What motivates you in your career?",
+                    "Describe a situation where you showed leadership.",
                     "Where do you see yourself in five years?",
-                    "How do you handle pressure and tight deadlines?",
-                    "Tell me about a challenging project and how you managed it.",
+                    "How do you handle tight deadlines?",
+                    "What is your biggest professional achievement?",
+                    "Why are you interested in this role?",
+                    "How do you prioritize when everything is urgent?",
                 ]
             else:
                 fallback_questions = [
-                    f"Explain the core concepts and best practices of {job_role}.",
-                    f"Describe a challenging technical problem you solved as a {job_role}.",
-                    f"What tools and technologies do you use most as a {job_role}?",
-                    f"Walk me through how you would design a system for a common {job_role} task.",
-                    f"What is your approach to debugging and troubleshooting?",
-                    f"Explain a complex concept from your domain in simple terms.",
+                    f"What are the key principles of {job_role}?",
+                    f"Describe a tough technical problem you solved recently.",
+                    f"What tools and frameworks do you prefer as a {job_role} and why?",
+                    f"How would you design a scalable system for a typical {job_role} task?",
+                    f"What is your approach to debugging production issues?",
+                    f"Explain a complex {job_role} concept in simple terms.",
+                    f"What are common performance bottlenecks in {job_role} work?",
+                    f"How do you ensure code quality in your projects?",
                 ]
 
             chosen = fallback_questions[0]
@@ -328,13 +462,6 @@ Return ONLY a JSON object in this exact format:
                 "is_coding": False,
                 "followup_trigger_conditions": {},
             }
-
-        parsed.setdefault("round", round_type)
-        parsed.setdefault("evaluation_keywords", parsed.get("keywords", ["experience", "skills"]))
-        parsed.setdefault("difficulty_level", difficulty)
-        parsed.setdefault("is_coding", False)
-        parsed.setdefault("followup_trigger_conditions", {})
-        parsed["keywords"] = parsed["evaluation_keywords"]
 
         return parsed
 
@@ -380,16 +507,9 @@ Return ONLY a JSON object in this exact format:
                 "phase": "instant",
             }
 
-        # 1. Semantic similarity (SentenceTransformer if available, else word overlap)
-        if self.embedding_model is not None:
-            embeddings = self.embedding_model.encode([ideal_answer, candidate_answer])
-            sim_score = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]) * 100
-        else:
-            # Word-overlap fallback
-            ideal_words = set(ideal_answer.lower().split())
-            cand_words = set(candidate_answer.lower().split())
-            overlap = ideal_words & cand_words
-            sim_score = (len(overlap) / max(len(ideal_words), 1)) * 100
+        # 1. Semantic similarity (SentenceTransformer — local, fast)
+        embeddings = self.embedding_model.encode([ideal_answer, candidate_answer])
+        sim_score = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]) * 100
 
         # 2. Keyword coverage (pure string match — instant)
         answer_lower = candidate_answer.lower()
@@ -830,6 +950,71 @@ Return ONLY a JSON object:
         else:
             comm_feedback = "Communication needs significant improvement. Practice the STAR method for behavioral questions."
 
+        # ── Explainability Service: SHAP-based dimension analysis ──
+        try:
+            avg_answer_text = " ".join(
+                e.get("answer", "")[:200] for e in (tech_evaluations + hr_evaluations)[:5]
+            )
+            explainability_eval = {
+                "content_score": overall_scores["content_score"],
+                "similarity_score": overall_scores["content_score"],
+                "keyword_coverage": overall_scores["keyword_score"],
+                "keyword_score": overall_scores["keyword_score"],
+                "depth_score": overall_scores["depth_score"],
+                "communication_score": overall_scores["communication_score"],
+                "confidence_score": overall_scores["confidence_score"],
+                "fluency_score": overall_scores.get("communication_score", 50),
+                "eye_contact": overall_scores.get("confidence_score", 50),
+                "emotion_stability": max(50, overall_scores.get("confidence_score", 50) - 5),
+                "stress_level": max(0, 100 - overall_scores.get("confidence_score", 50)),
+                "facial_confidence": overall_scores.get("confidence_score", 50),
+                "specificity_score": overall_scores.get("depth_score", 50),
+                "answer_text": avg_answer_text,
+            }
+            explainability_result = explainability_service.explain_score(explainability_eval)
+        except Exception as e:
+            print(f"[Report] Explainability service error: {e}")
+            explainability_result = None
+
+        # ── Development Roadmap Service: personalized improvement plan ──
+        try:
+            # Build dimension_scores dict matching roadmap service expectations
+            dim_scores_for_roadmap = {}
+            if explainability_result and "dimension_scores" in explainability_result:
+                dim_scores_for_roadmap = explainability_result["dimension_scores"]
+            else:
+                # Fallback: build from raw scores
+                def _grade(s):
+                    if s >= 85: return "Excellent"
+                    if s >= 70: return "Good"
+                    if s >= 55: return "Average"
+                    if s >= 40: return "Below Average"
+                    return "Needs Improvement"
+
+                dim_scores_for_roadmap = {
+                    "Communication": {"score": overall_scores["communication_score"], "grade": _grade(overall_scores["communication_score"])},
+                    "Technical Depth": {"score": overall_scores["content_score"], "grade": _grade(overall_scores["content_score"])},
+                    "Confidence": {"score": overall_scores["confidence_score"], "grade": _grade(overall_scores["confidence_score"])},
+                    "Emotional Regulation": {"score": max(50, overall_scores["confidence_score"] - 5), "grade": _grade(max(50, overall_scores["confidence_score"] - 5))},
+                    "Problem Solving": {"score": overall_scores["depth_score"], "grade": _grade(overall_scores["depth_score"])},
+                }
+
+            roadmap_eval_summary = {
+                "overall_score": overall_avg,
+                "dimension_scores": dim_scores_for_roadmap,
+                "improvement_suggestions": (
+                    explainability_result.get("improvement_suggestions", [])
+                    if explainability_result else []
+                ),
+            }
+            job_role = session.get("job_role", "")
+            development_roadmap = development_roadmap_service.generate_roadmap(
+                roadmap_eval_summary, target_role=job_role, weeks_available=8
+            )
+        except Exception as e:
+            print(f"[Report] Development roadmap service error: {e}")
+            development_roadmap = None
+
         return {
             "session_id": str(session.get("_id", "")),
             "candidate_name": user.get("name", "Candidate"),
@@ -861,52 +1046,138 @@ Return ONLY a JSON object:
                 },
             },
             "generated_at": datetime.utcnow().isoformat(),
+            # ── Enriched analysis from integrated services ──
+            "explainability": explainability_result,
+            "development_roadmap": development_roadmap,
         }
 
     def _analyze_performance(self, scores: dict, evaluations: list) -> tuple:
+        """Generate dynamic, interview-specific strengths, weaknesses, and suggestions
+        based on actual question-level performance data."""
         strengths = []
         weaknesses = []
         suggestions = []
 
-        if scores.get("content_score", 0) >= 70:
-            strengths.append("Strong technical knowledge and relevant answers")
+        content = scores.get("content_score", 0)
+        comm = scores.get("communication_score", 0)
+        depth = scores.get("depth_score", 0)
+        keyword = scores.get("keyword_score", 0)
+        confidence = scores.get("confidence_score", 0)
+        overall = scores.get("overall_score", 0)
+
+        # ── Dimension-level analysis ──────────────────
+        if content >= 70:
+            strengths.append(f"Strong technical knowledge (Content: {content:.0f}%)")
         else:
-            weaknesses.append("Content could be more relevant and detailed")
-            suggestions.append("Study core concepts for your target role and practice explaining them")
+            weaknesses.append(f"Content relevance needs work (Content: {content:.0f}%)")
 
-        if scores.get("communication_score", 0) >= 70:
-            strengths.append("Good communication skills and structured responses")
+        if comm >= 70:
+            strengths.append(f"Clear and structured communication (Communication: {comm:.0f}%)")
         else:
-            weaknesses.append("Communication needs improvement")
-            suggestions.append("Practice structuring answers using the STAR method (Situation, Task, Action, Result)")
+            weaknesses.append(f"Communication could be more structured (Communication: {comm:.0f}%)")
 
-        if scores.get("depth_score", 0) >= 70:
-            strengths.append("Demonstrates deep understanding of concepts")
+        if depth >= 70:
+            strengths.append(f"Good depth of understanding (Depth: {depth:.0f}%)")
         else:
-            weaknesses.append("Answers lack depth and practical examples")
-            suggestions.append("Include specific examples, metrics, and real-world scenarios in your answers")
+            weaknesses.append(f"Answers lack depth and detail (Depth: {depth:.0f}%)")
 
-        if scores.get("keyword_score", 0) >= 70:
-            strengths.append("Good use of industry terminology and keywords")
+        if keyword >= 70:
+            strengths.append(f"Effective use of domain terminology (Keywords: {keyword:.0f}%)")
         else:
-            weaknesses.append("Missing key industry terms and technical vocabulary")
-            suggestions.append("Review job descriptions and use relevant technical terminology")
+            weaknesses.append(f"Missing key technical terms (Keywords: {keyword:.0f}%)")
 
-        if scores.get("overall_score", 0) >= 75:
-            strengths.append("Overall strong interview performance")
-        elif scores.get("overall_score", 0) < 40:
-            weaknesses.append("Overall performance needs significant improvement")
-            suggestions.append("Practice with mock interviews daily and review ideal answers")
+        if confidence >= 70:
+            strengths.append(f"Confident and composed delivery (Confidence: {confidence:.0f}%)")
+        elif confidence < 45:
+            weaknesses.append(f"Appeared nervous or uncertain (Confidence: {confidence:.0f}%)")
 
-        weak_count = sum(1 for e in evaluations if e.get("answer_strength") == "weak")
-        if weak_count > len(evaluations) * 0.5 and len(evaluations) > 0:
-            weaknesses.append(f"Struggled with {weak_count} out of {len(evaluations)} questions")
-            suggestions.append("Focus on your weak areas and build confidence through practice")
+        # ── Question-level analysis: find specific weak topics ──
+        weak_questions = []
+        strong_questions = []
+        all_missed_keywords = []
+        weak_topics = set()
+        strong_topics = set()
 
+        for e in evaluations:
+            q_score = e.get("scores", {}).get("overall_score", 0)
+            q_text = e.get("question", "")
+            topic = e.get("topic", "") or e.get("question_subtype", "")
+            missed = e.get("keywords_missed", [])
+            round_type = e.get("round", "Technical")
+
+            if q_score < 50:
+                weak_questions.append({"question": q_text, "score": q_score, "round": round_type})
+                if topic:
+                    weak_topics.add(topic)
+            elif q_score >= 75:
+                strong_questions.append({"question": q_text, "score": q_score, "round": round_type})
+                if topic:
+                    strong_topics.add(topic)
+
+            all_missed_keywords.extend(missed)
+
+        # Report specific struggled questions
+        if weak_questions:
+            weak_count = len(weak_questions)
+            total = len(evaluations)
+            weaknesses.append(f"Struggled with {weak_count}/{total} questions (scored below 50%)")
+
+            # Show the weakest questions specifically
+            worst = sorted(weak_questions, key=lambda x: x["score"])[:3]
+            for w in worst:
+                short_q = w["question"][:60] + "..." if len(w["question"]) > 60 else w["question"]
+                weaknesses.append(f"  Low score on: \"{short_q}\" ({w['score']:.0f}%)")
+
+        if strong_questions and len(strong_questions) >= 2:
+            strengths.append(f"Excelled in {len(strong_questions)}/{len(evaluations)} questions (scored 75%+)")
+
+        # ── Dynamic suggestions based on actual gaps ──
+        # Sort dimensions by score to prioritize weakest areas
+        dims = [
+            ("Content", content, "Study core concepts for the role. Review textbooks, documentation, and practice explaining topics out loud."),
+            ("Communication", comm, "Practice the STAR method (Situation, Task, Action, Result). Record yourself answering and review for clarity."),
+            ("Depth", depth, "Go deeper in your answers. Include specific examples, metrics, trade-offs, and real-world scenarios."),
+            ("Keywords", keyword, "Review job descriptions for your target role. Use relevant technical terms naturally in your answers."),
+            ("Confidence", confidence, "Practice mock interviews regularly. Prepare 2-3 strong examples for common question types."),
+        ]
+        dims_sorted = sorted(dims, key=lambda d: d[1])
+
+        # Suggest improvements for the weakest 2-3 dimensions
+        for name, score, suggestion in dims_sorted:
+            if score < 70:
+                suggestions.append(f"[{name} - {score:.0f}%] {suggestion}")
+            if len(suggestions) >= 3 and score >= 50:
+                break  # Enough suggestions for moderate performers
+
+        # Keyword-specific suggestions
+        if all_missed_keywords:
+            # Get top missed keywords (most frequently missed)
+            from collections import Counter
+            keyword_counts = Counter(all_missed_keywords)
+            top_missed = [kw for kw, _ in keyword_counts.most_common(5)]
+            suggestions.append(f"Focus on these missed keywords: {', '.join(top_missed)}")
+
+        # Weak topic suggestions
+        if weak_topics:
+            suggestions.append(f"Revise these weak areas: {', '.join(list(weak_topics)[:4])}")
+
+        # Round-specific advice
+        tech_evals = [e for e in evaluations if e.get("round") != "HR"]
+        hr_evals = [e for e in evaluations if e.get("round") == "HR"]
+        if tech_evals:
+            tech_avg = sum(e.get("scores", {}).get("overall_score", 0) for e in tech_evals) / len(tech_evals)
+            if tech_avg < 50:
+                suggestions.append("Technical round needs significant work. Focus on fundamentals and practice coding problems daily.")
+        if hr_evals:
+            hr_avg = sum(e.get("scores", {}).get("overall_score", 0) for e in hr_evals) / len(hr_evals)
+            if hr_avg < 50:
+                suggestions.append("HR round needs improvement. Prepare stories about teamwork, leadership, and conflict resolution.")
+
+        # Ensure we always have at least one suggestion
         if not strengths:
-            strengths.append("Willingness to practice and improve")
+            strengths.append("Shows willingness to practice and improve")
         if not suggestions:
-            suggestions.append("Keep practicing to maintain your performance level")
+            suggestions.append("Maintain your strong performance by continuing regular practice")
 
         return strengths, weaknesses, suggestions
 

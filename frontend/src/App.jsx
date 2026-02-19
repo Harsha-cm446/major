@@ -16,6 +16,7 @@ import SessionDetail from './pages/SessionDetail';
 import LiveInterview from './pages/LiveInterview';
 import CandidateJoin from './pages/CandidateJoin';
 import ProfilePage from './pages/ProfilePage';
+import DataCollectionPage from './pages/DataCollectionPage';
 
 function ProtectedRoute({ children, roles }) {
   const { user, loading } = useAuth();
@@ -39,6 +40,7 @@ function AppRoutes() {
         {/* Student routes */}
         <Route path="/dashboard" element={<ProtectedRoute roles={['student']}><StudentDashboard /></ProtectedRoute>} />
         <Route path="/mock-interview" element={<ProtectedRoute roles={['student']}><MockInterview /></ProtectedRoute>} />
+        <Route path="/profile-builder" element={<ProtectedRoute roles={['student']}><DataCollectionPage /></ProtectedRoute>} />
         <Route path="/report/:sessionId" element={<ProtectedRoute roles={['student']}><InterviewReport /></ProtectedRoute>} />
 
         {/* Profile (all logged-in users) */}

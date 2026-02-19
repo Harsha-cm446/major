@@ -104,24 +104,17 @@ class QuestionGenerationService:
     """4-model intelligent question generation with quality filtering."""
 
     def __init__(self):
-        self._embedding_model = None
-        self._gemini_client = None
         self._question_history: Dict[str, List[str]] = {}
 
     @property
     def embedding_model(self):
-        if self._embedding_model is None and ST_AVAILABLE:
-            self._embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        return self._embedding_model
+        from app.services.model_registry import model_registry
+        return model_registry.embedding_model
 
     @property
     def gemini_client(self):
-        if self._gemini_client is None:
-            if settings.GEMINI_API_KEY:
-                self._gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            else:
-                print("Gemini error: GEMINI_API_KEY not configured")
-        return self._gemini_client
+        from app.services.model_registry import model_registry
+        return model_registry.gemini_client
 
     async def _gemini_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
         """Call Google Gemini API."""
@@ -130,7 +123,7 @@ class QuestionGenerationService:
         if not client:
             return ""
 
-        max_tokens = 512 if fast else 1024
+        max_tokens = 400 if fast else 600
 
         try:
             response = await asyncio.to_thread(
@@ -176,13 +169,19 @@ class QuestionGenerationService:
 Difficulty: {difficulty}
 Soft skills to evaluate: {json.dumps(soft_skills) if soft_skills else 'teamwork, communication, leadership'}
 
-The question MUST follow the STAR method format (ask about a Situation, Task, Action, Result).
-Previously asked questions (DO NOT repeat): {json.dumps(previous_questions[:5])}
+RULES:
+- The question MUST be SHORT (1-2 sentences, max 25 words).
+- Ask about a real past experience using STAR method.
+- Do NOT write long multi-part questions.
+- Good example: "Tell me about a time you resolved a team conflict."
+- Bad example: "Can you describe a situation in your previous role where you encountered a significant challenge with a team member, detailing what happened, what you did, and what the outcome was?"
+
+Previously asked (DO NOT repeat): {json.dumps(previous_questions[:5])}
 
 Return ONLY valid JSON:
 {{
-  "question": "Your behavioral question",
-  "ideal_answer": "A model STAR-method answer",
+  "question": "Short behavioral question (1-2 sentences)",
+  "ideal_answer": "Concise STAR-method answer (3-5 sentences)",
   "evaluation_keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
   "competency_evaluated": "the soft skill being tested",
   "difficulty_level": "{difficulty}",
@@ -194,7 +193,7 @@ Return ONLY valid JSON:
   }}
 }}"""
 
-        system = "You are an expert behavioral interviewer. Generate STAR-method questions. Return valid JSON only."
+        system = "You are an expert behavioral interviewer. Generate SHORT, CONCISE STAR-method questions (1-2 sentences max). Never write long or multi-part questions. Return valid JSON only."
         response = await self._gemini_generate(prompt, system)
         parsed = self._parse_json(response)
 
@@ -202,9 +201,13 @@ Return ONLY valid JSON:
             import random
             scenario = random.choice(BEHAVIORAL_SCENARIOS)
             template = random.choice(BEHAVIORAL_TEMPLATES)
+            q = template.format(scenario=scenario)
+            # Ensure fallback is concise
+            if len(q.split()) > 25:
+                q = f"Tell me about a time you {scenario}."
             parsed = {
-                "question": template.format(scenario=scenario),
-                "ideal_answer": f"A strong answer would use the STAR method: describe the Situation, Task, Action taken, and Result achieved regarding {scenario}.",
+                "question": q,
+                "ideal_answer": f"Use the STAR method: describe the Situation, your Task, the Actions you took, and the Result when you {scenario}.",
                 "evaluation_keywords": ["situation", "task", "action", "result", "learning"],
                 "competency_evaluated": "behavioral competency",
                 "difficulty_level": difficulty,
@@ -257,29 +260,36 @@ Topics: {json.dumps(tech_topics[:5]) if tech_topics else 'relevant domain topics
 {followup}
 {coding_inst}
 
+RULES:
+- The question MUST be SHORT and DIRECT (1-2 sentences, max 30 words).
+- Ask ONE clear technical thing. No long preambles or multi-part questions.
+- Good: "What is the difference between TCP and UDP?"
+- Good: "How would you optimize a slow SQL query?"
+- Bad: "Can you explain in detail the various differences between TCP and UDP protocols, including their use cases, advantages, disadvantages, and when you would choose one over the other?"
+
 Previously asked: {json.dumps(previous_questions[:5])}
 
 Return ONLY valid JSON:
 {{
-  "question": "Your technical question",
-  "ideal_answer": "Comprehensive expert-level answer",
+  "question": "Short technical question (1-2 sentences)",
+  "ideal_answer": "Concise expert answer (3-5 sentences)",
   "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
   "difficulty_level": "{difficulty}",
   "is_coding": {str(is_coding).lower()},
   "topic": "primary topic being tested",
   "expected_depth": "conceptual|practical|advanced",
-  "followup_if_strong": "Harder follow-up question",
-  "followup_if_weak": "Simpler fallback question"
+  "followup_if_strong": "Harder follow-up (1 sentence)",
+  "followup_if_weak": "Simpler fallback (1 sentence)"
 }}"""
 
-        system = f"You are an expert {job_role} technical interviewer. Return valid JSON only."
+        system = f"You are an expert {job_role} technical interviewer. Generate SHORT, CONCISE questions (1-2 sentences max). Never write long or multi-part questions. Return valid JSON only."
         response = await self._gemini_generate(prompt, system)
         parsed = self._parse_json(response)
 
         if not parsed or "question" not in parsed:
             parsed = {
-                "question": f"Explain the core concepts and best practices of {job_role} relevant to {question_subtype}.",
-                "ideal_answer": f"A strong answer should cover key {job_role} concepts, real-world applications, and industry best practices.",
+                "question": f"What are the key concepts a {job_role} should know about {question_subtype}?",
+                "ideal_answer": f"Cover the core {question_subtype} concepts, real-world usage, and best practices relevant to {job_role}.",
                 "evaluation_keywords": ["concepts", "best practices", "experience", "architecture", "implementation"],
                 "difficulty_level": difficulty,
                 "is_coding": is_coding,
@@ -308,31 +318,36 @@ Return ONLY valid JSON:
         if jd_analysis:
             responsibilities = jd_analysis.get("key_responsibilities", [])
 
-        prompt = f"""Generate a SITUATIONAL (hypothetical scenario) interview question for {job_role}.
+        prompt = f"""Generate a SITUATIONAL interview question for {job_role}.
 Difficulty: {difficulty}
 Job Responsibilities: {json.dumps(responsibilities[:5]) if responsibilities else 'general role duties'}
 
-The question should present a realistic workplace scenario and ask the candidate how they would handle it.
+RULES:
+- Present a brief realistic scenario and ask how they'd handle it.
+- Keep the question SHORT (1-3 sentences max, under 35 words).
+- Good: "Your team misses a sprint deadline. How do you handle it?"
+- Bad: "Imagine you are working on a critical project and your team has been struggling with meeting deadlines due to various factors including scope creep and resource constraints. How would you approach this situation?"
+
 Previously asked: {json.dumps(previous_questions[:5])}
 
 Return ONLY valid JSON:
 {{
-  "question": "Your situational question presenting a hypothetical scenario",
-  "ideal_answer": "The ideal approach and reasoning",
+  "question": "Short situational question (1-3 sentences)",
+  "ideal_answer": "Concise ideal approach (3-5 sentences)",
   "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
   "difficulty_level": "{difficulty}",
   "scenario_type": "conflict|deadline|resource|technical_failure|stakeholder|priority",
   "skills_evaluated": ["skill1", "skill2"]
 }}"""
 
-        system = "You are an expert situational interviewer. Create realistic workplace scenarios. Return valid JSON only."
+        system = "You are an expert situational interviewer. Create SHORT, CONCISE scenario questions (1-3 sentences max). Never write long or wordy questions. Return valid JSON only."
         response = await self._gemini_generate(prompt, system)
         parsed = self._parse_json(response)
 
         if not parsed or "question" not in parsed:
             parsed = {
-                "question": f"Imagine you're a {job_role} and a critical system fails right before a major release. Walk me through your response plan.",
-                "ideal_answer": "A strong answer includes immediate triage, stakeholder communication, root cause analysis, fix implementation, and post-mortem planning.",
+                "question": f"A critical system fails before a major release. As a {job_role}, what do you do first?",
+                "ideal_answer": "Immediate triage, stakeholder communication, root cause analysis, implement fix, and plan a post-mortem.",
                 "evaluation_keywords": ["triage", "communication", "problem-solving", "prioritization", "follow-up"],
                 "difficulty_level": difficulty,
                 "scenario_type": "technical_failure",
@@ -362,13 +377,17 @@ Return ONLY valid JSON:
 Difficulty: {difficulty}
 Company values: {json.dumps(values)}
 
-Assess whether the candidate aligns with the company culture, values, and work style.
+RULES:
+- Keep the question SHORT (1-2 sentences, max 25 words).
+- Good: "What kind of work environment helps you do your best work?"
+- Bad: "Can you describe in detail the type of organizational culture and work environment that you find most conducive to your professional growth and productivity?"
+
 Previously asked: {json.dumps(previous_questions[:5])}
 
 Return ONLY valid JSON:
 {{
-  "question": "Your cultural fit question",
-  "ideal_answer": "What a culturally aligned candidate would say",
+  "question": "Short cultural fit question (1-2 sentences)",
+  "ideal_answer": "Concise ideal response (3-5 sentences)",
   "evaluation_keywords": ["kw1", "kw2", "kw3", "kw4", "kw5"],
   "difficulty_level": "{difficulty}",
   "value_assessed": "the specific value being evaluated",
@@ -376,14 +395,14 @@ Return ONLY valid JSON:
   "green_flags": ["things that indicate good cultural fit"]
 }}"""
 
-        system = "You are an expert HR cultural fit assessor. Return valid JSON only."
+        system = "You are an expert HR cultural fit assessor. Generate SHORT, CONCISE questions (1-2 sentences max). Never write long or wordy questions. Return valid JSON only."
         response = await self._gemini_generate(prompt, system)
         parsed = self._parse_json(response)
 
         if not parsed or "question" not in parsed:
             parsed = {
-                "question": "What kind of work environment do you thrive in, and how do you contribute to team culture?",
-                "ideal_answer": "A strong answer demonstrates self-awareness, team orientation, and alignment with collaborative values.",
+                "question": "What kind of work environment helps you do your best work?",
+                "ideal_answer": "Show self-awareness, team orientation, and alignment with collaborative, growth-focused values.",
                 "evaluation_keywords": ["culture", "teamwork", "values", "collaboration", "growth"],
                 "difficulty_level": difficulty,
                 "value_assessed": "teamwork",
