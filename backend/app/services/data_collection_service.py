@@ -388,11 +388,30 @@ class DataCollectionService:
                     "relation": "written_in",
                 })
 
+        # Derive central skills (skills with most connections)
+        skill_nodes = [n for n in nodes if n["type"] == "skill"]
+        central_skills = [n["label"] for n in skill_nodes[:10]]
+
+        # Derive skill clusters from technology nodes grouped by experience
+        tech_nodes = [n for n in nodes if n["type"] == "technology"]
+        skill_clusters = {}
+        for edge in edges:
+            if edge["relation"] == "used_technology":
+                # Find the experience node for this edge
+                exp_node = next((n for n in nodes if n["id"] == edge["source"]), None)
+                if exp_node:
+                    cluster_name = exp_node["label"].split(" @ ")[0] if " @ " in exp_node["label"] else "General"
+                    tech_node = next((n for n in nodes if n["id"] == edge["target"]), None)
+                    if tech_node:
+                        skill_clusters.setdefault(cluster_name, []).append(tech_node["label"])
+
         return {
             "nodes": nodes,
             "edges": edges,
             "node_count": len(nodes),
             "edge_count": len(edges),
+            "central_skills": central_skills,
+            "skill_clusters": skill_clusters,
         }
 
     # ── Embedding Generation ──────────────────────────

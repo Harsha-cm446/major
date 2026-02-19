@@ -146,6 +146,50 @@ export default function InterviewReport() {
         </div>
       )}
 
+      {/* Candidate Profile Summary (from Data Collection) */}
+      {report.candidate_profile_summary?.profile_used && (
+        <div className="rounded-xl p-5 mb-6 border bg-indigo-50 border-indigo-200">
+          <h3 className="font-semibold text-indigo-800 mb-3">Candidate Profile</h3>
+          <div className="grid sm:grid-cols-2 gap-4 text-sm text-gray-700">
+            {report.candidate_profile_summary.skills?.length > 0 && (
+              <div>
+                <span className="font-medium text-gray-800">Skills:</span>{' '}
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {report.candidate_profile_summary.skills.slice(0, 12).map((s, i) => (
+                    <span key={i} className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded text-xs">{s}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {report.candidate_profile_summary.experience_years != null && (
+              <div>
+                <span className="font-medium text-gray-800">Experience:</span>{' '}
+                {report.candidate_profile_summary.experience_years} year(s)
+              </div>
+            )}
+            {report.candidate_profile_summary.education?.length > 0 && (
+              <div>
+                <span className="font-medium text-gray-800">Education:</span>{' '}
+                {report.candidate_profile_summary.education.join(', ')}
+              </div>
+            )}
+            {report.candidate_profile_summary.certifications?.length > 0 && (
+              <div>
+                <span className="font-medium text-gray-800">Certifications:</span>{' '}
+                {report.candidate_profile_summary.certifications.join(', ')}
+              </div>
+            )}
+            {report.candidate_profile_summary.github_stats && (
+              <div>
+                <span className="font-medium text-gray-800">GitHub:</span>{' '}
+                {report.candidate_profile_summary.github_stats.public_repos || 0} repos,{' '}
+                {report.candidate_profile_summary.github_stats.followers || 0} followers
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Two-Round Summary Cards */}
       {roundSummary && (
         <div className="grid sm:grid-cols-3 gap-4 mb-8">

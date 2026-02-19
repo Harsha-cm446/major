@@ -198,6 +198,7 @@ Return ONLY a JSON object:
         jd_analysis: Dict[str, Any] = None,
         is_coding_question: bool = False,
         session_id: str = None,
+        candidate_profile_context: str = "",
     ) -> Dict[str, Any]:
         """Generate an adaptive interview question using specialized generators
         with RL-based difficulty calibration and redundancy checking."""
@@ -254,6 +255,7 @@ Return ONLY a JSON object:
                 jd_analysis=jd_analysis,
                 last_score=last_score,
                 last_answer=previous_answers[-1] if previous_answers else None,
+                candidate_profile_context=candidate_profile_context,
             )
 
             # Redundancy check using sentence embeddings
@@ -994,6 +996,25 @@ Return ONLY a JSON object:
             print(f"[Report] Development roadmap service error: {e}")
             development_roadmap = None
 
+        # ── Candidate Profile Summary (from Data Collection) ──
+        candidate_profile_summary = None
+        profile_context = session.get("candidate_profile_context", "")
+        if profile_context:
+            candidate_profile_summary = {
+                "profile_used": True,
+                "context": profile_context,
+            }
+        # Also pull structured data from user doc if present
+        candidate_profile = user.get("candidate_profile", {})
+        if candidate_profile:
+            if candidate_profile_summary is None:
+                candidate_profile_summary = {"profile_used": True}
+            candidate_profile_summary["skills"] = candidate_profile.get("skills", [])
+            candidate_profile_summary["experience_years"] = candidate_profile.get("experience_years")
+            candidate_profile_summary["education"] = candidate_profile.get("education", [])
+            candidate_profile_summary["certifications"] = candidate_profile.get("certifications", [])
+            candidate_profile_summary["github_stats"] = candidate_profile.get("github_stats")
+
         return {
             "session_id": str(session.get("_id", "")),
             "candidate_name": user.get("name", "Candidate"),
@@ -1030,6 +1051,8 @@ Return ONLY a JSON object:
             "development_roadmap": development_roadmap,
             # ── Proctoring data ──
             "proctoring": session.get("proctoring", {}),
+            # ── Candidate Profile from Data Collection ──
+            "candidate_profile_summary": candidate_profile_summary,
         }
 
     def _analyze_performance(self, scores: dict, evaluations: list) -> tuple:

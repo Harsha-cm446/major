@@ -81,6 +81,41 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
         repos = ", ".join([r["name"] for r in github_profile.get("repositories", [])[:5]])
         github_context = f"\nCandidate GitHub: languages={langs}; repos={repos}; stars={github_profile.get('total_stars', 0)}"
 
+    # ── Load stored candidate profile (from Data Collection page) ──
+    user_doc = await db.users.find_one({"_id": user["_id"]})
+    candidate_profile_context = ""
+    stored_profile = user_doc.get("candidate_profile") if user_doc else None
+    parsed_resume = user_doc.get("parsed_resume") if user_doc else None
+
+    profile_parts = []
+    if parsed_resume:
+        skills = parsed_resume.get("skills", [])
+        if skills:
+            profile_parts.append(f"Resume Skills: {', '.join(skills[:15])}")
+        yoe = parsed_resume.get("years_of_experience", 0)
+        if yoe:
+            profile_parts.append(f"Experience: {yoe} years")
+        degrees = parsed_resume.get("degrees", [])
+        if degrees:
+            profile_parts.append(f"Education: {', '.join(degrees[:3])}")
+        certs = parsed_resume.get("certifications", [])
+        if certs:
+            profile_parts.append(f"Certifications: {', '.join(certs[:5])}")
+    elif stored_profile:
+        resume_data = stored_profile.get("resume", {})
+        skills = resume_data.get("skills", [])
+        if skills:
+            profile_parts.append(f"Resume Skills: {', '.join(skills[:15])}")
+        yoe = resume_data.get("years_of_experience", 0)
+        if yoe:
+            profile_parts.append(f"Experience: {yoe} years")
+
+    if stored_profile and stored_profile.get("profile_summary"):
+        profile_parts.append(stored_profile["profile_summary"])
+
+    if profile_parts:
+        candidate_profile_context = "\nCandidate Profile: " + " | ".join(profile_parts)
+
     session_doc = {
         "user_id": str(user["_id"]),
         "job_role": data.job_role,
@@ -90,6 +125,7 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
         "jd_analysis": jd_analysis,
         "github_profile": github_profile if github_profile and "error" not in github_profile else None,
         "linkedin_url": data.linkedin_url or "",
+        "candidate_profile_context": candidate_profile_context,
         "status": "in_progress",
         "current_round": "Technical",
         "duration_minutes": data.duration_minutes,
@@ -131,8 +167,8 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
     except Exception:
         pass  # Non-critical — proceed without history
 
-    # Generate the first Technical question (enriched with GitHub context)
-    enriched_jd = (data.job_description or "") + github_context
+    # Generate the first Technical question (enriched with GitHub + profile context)
+    enriched_jd = (data.job_description or "") + github_context + candidate_profile_context
     question_data = await ai_service.generate_question(
         job_role=data.job_role,
         difficulty=data.difficulty.value,
@@ -141,6 +177,7 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
         job_description=enriched_jd,
         experience_level=data.experience_level or "",
         jd_analysis=jd_analysis,
+        candidate_profile_context=candidate_profile_context,
     )
 
     question_doc = {
@@ -301,6 +338,7 @@ async def submit_answer(
             previous_answers=prev_answers,
             last_score=last_score,
             jd_analysis=session.get("jd_analysis"),
+            candidate_profile_context=session.get("candidate_profile_context", ""),
         )
 
         try:
@@ -403,6 +441,7 @@ async def submit_answer(
                         previous_answers=[r["answer_text"] for r in all_responses],
                         last_score=evaluation.get("overall_score", 50),
                         jd_analysis=session.get("jd_analysis"),
+                        candidate_profile_context=session.get("candidate_profile_context", ""),
                     )
 
     # ── Generate next question (if not already done in parallel) ──
@@ -424,6 +463,7 @@ async def submit_answer(
             previous_answers=prev_answers,
             last_score=last_score,
             jd_analysis=session.get("jd_analysis"),
+            candidate_profile_context=session.get("candidate_profile_context", ""),
         )
     else:
         next_difficulty = ai_service.determine_next_difficulty(

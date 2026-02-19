@@ -190,6 +190,7 @@ async def build_full_profile(
         {"$set": {"candidate_profile": profile}},
     )
 
+    kg = profile.get("knowledge_graph", {})
     return {
         "profile_summary": profile.get("profile_summary", ""),
         "skills": profile.get("resume", {}).get("skills", []),
@@ -200,8 +201,10 @@ async def build_full_profile(
             "repos_analyzed": len(profile.get("github", {}).get("repositories", [])),
         },
         "knowledge_graph": {
-            "node_count": profile.get("knowledge_graph", {}).get("node_count", 0),
-            "edge_count": profile.get("knowledge_graph", {}).get("edge_count", 0),
+            "node_count": kg.get("node_count", 0),
+            "edge_count": kg.get("edge_count", 0),
+            "central_skills": kg.get("central_skills", []),
+            "skill_clusters": kg.get("skill_clusters", {}),
         },
         "features": profile.get("features", {}),
     }

@@ -140,15 +140,21 @@ class QuestionGenerationService:
         previous_questions: List[str],
         candidate_context: Dict[str, Any] = None,
         jd_analysis: Dict[str, Any] = None,
+        candidate_profile_context: str = "",
     ) -> Dict[str, Any]:
         """Generate a behavioral (STAR-method) interview question."""
         soft_skills = []
         if jd_analysis:
             soft_skills = jd_analysis.get("soft_skills", [])
 
+        profile_inst = ""
+        if candidate_profile_context:
+            profile_inst = f"\n{candidate_profile_context}\nTailor the question to the candidate's background when relevant."
+
         prompt = f"""Generate a BEHAVIORAL interview question for a {job_role} candidate.
 Difficulty: {difficulty}
 Soft skills to evaluate: {json.dumps(soft_skills) if soft_skills else 'teamwork, communication, leadership'}
+{profile_inst}
 
 RULES:
 - The question MUST be SHORT (1-2 sentences, max 25 words).
@@ -212,6 +218,7 @@ Return ONLY valid JSON:
         jd_analysis: Dict[str, Any] = None,
         last_score: float = None,
         last_answer: str = None,
+        candidate_profile_context: str = "",
     ) -> Dict[str, Any]:
         """Generate a technical interview question."""
         tech_skills = []
@@ -234,12 +241,17 @@ Return ONLY valid JSON:
         if is_coding:
             coding_inst = "This MUST be a coding question. Include problem statement, constraints, and expected I/O."
 
+        profile_inst = ""
+        if candidate_profile_context:
+            profile_inst = f"\n{candidate_profile_context}\nTailor the question to the candidate's background when relevant."
+
         prompt = f"""Generate a TECHNICAL ({question_subtype}) interview question for {job_role}.
 Difficulty: {difficulty}
 Skills to evaluate: {json.dumps(tech_skills[:8]) if tech_skills else job_role}
 Topics: {json.dumps(tech_topics[:5]) if tech_topics else 'relevant domain topics'}
 {followup}
 {coding_inst}
+{profile_inst}
 
 RULES:
 - The question MUST be SHORT and DIRECT (1-2 sentences, max 30 words).
@@ -293,15 +305,21 @@ Return ONLY valid JSON:
         difficulty: str,
         previous_questions: List[str],
         jd_analysis: Dict[str, Any] = None,
+        candidate_profile_context: str = "",
     ) -> Dict[str, Any]:
         """Generate a hypothetical scenario-based question."""
         responsibilities = []
         if jd_analysis:
             responsibilities = jd_analysis.get("key_responsibilities", [])
 
+        profile_inst = ""
+        if candidate_profile_context:
+            profile_inst = f"\n{candidate_profile_context}\nTailor the scenario to the candidate's experience when relevant."
+
         prompt = f"""Generate a SITUATIONAL interview question for {job_role}.
 Difficulty: {difficulty}
 Job Responsibilities: {json.dumps(responsibilities[:5]) if responsibilities else 'general role duties'}
+{profile_inst}
 
 RULES:
 - Present a brief realistic scenario and ask how they'd handle it.
@@ -350,13 +368,19 @@ Return ONLY valid JSON:
         previous_questions: List[str],
         company_values: List[str] = None,
         jd_analysis: Dict[str, Any] = None,
+        candidate_profile_context: str = "",
     ) -> Dict[str, Any]:
         """Generate cultural fit assessment question."""
         values = company_values or ["teamwork", "innovation", "integrity", "growth"]
 
+        profile_inst = ""
+        if candidate_profile_context:
+            profile_inst = f"\n{candidate_profile_context}\nTailor the question to the candidate's background when relevant."
+
         prompt = f"""Generate a CULTURAL FIT interview question for {job_role}.
 Difficulty: {difficulty}
 Company values: {json.dumps(values)}
+{profile_inst}
 
 RULES:
 - Keep the question SHORT (1-2 sentences, max 25 words).
@@ -409,6 +433,7 @@ Return ONLY valid JSON:
         jd_analysis: Dict[str, Any] = None,
         last_score: float = None,
         last_answer: str = None,
+        candidate_profile_context: str = "",
         **kwargs,
     ) -> Dict[str, Any]:
         """Smart question router that selects the appropriate model."""
@@ -422,6 +447,7 @@ Return ONLY valid JSON:
                     job_role, difficulty, previous_questions,
                     question_subtype="conceptual", jd_analysis=jd_analysis,
                     last_score=last_score, last_answer=last_answer,
+                    candidate_profile_context=candidate_profile_context,
                 )
             elif progress < 0.5:
                 # Move to practical/coding
@@ -430,11 +456,13 @@ Return ONLY valid JSON:
                     job_role, difficulty, previous_questions,
                     question_subtype=subtype, jd_analysis=jd_analysis,
                     last_score=last_score, last_answer=last_answer,
+                    candidate_profile_context=candidate_profile_context,
                 )
             elif progress < 0.7:
                 # Situational/tradeoff
                 return await self.generate_situational_question(
                     job_role, difficulty, previous_questions, jd_analysis=jd_analysis,
+                    candidate_profile_context=candidate_profile_context,
                 )
             else:
                 # Deep technical
@@ -442,22 +470,26 @@ Return ONLY valid JSON:
                     job_role, difficulty, previous_questions,
                     question_subtype="architecture", jd_analysis=jd_analysis,
                     last_score=last_score, last_answer=last_answer,
+                    candidate_profile_context=candidate_profile_context,
                 )
         else:  # HR round
             if progress < 0.4:
                 return await self.generate_behavioral_question(
                     job_role, difficulty, previous_questions,
                     jd_analysis=jd_analysis,
+                    candidate_profile_context=candidate_profile_context,
                 )
             elif progress < 0.7:
                 return await self.generate_situational_question(
                     job_role, difficulty, previous_questions,
                     jd_analysis=jd_analysis,
+                    candidate_profile_context=candidate_profile_context,
                 )
             else:
                 return await self.generate_cultural_fit_question(
                     job_role, difficulty, previous_questions,
                     jd_analysis=jd_analysis,
+                    candidate_profile_context=candidate_profile_context,
                 )
 
     # ── Redundancy Elimination ────────────────────────
