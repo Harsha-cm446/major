@@ -272,6 +272,9 @@ async def submit_answer(
     is_coding = question_doc.get("is_coding", False)
     next_q_data = None  # Will be set in parallel for non-coding path
 
+    # Track how many coding questions have been asked so far
+    coding_count = sum(1 for q in session["questions"] if q.get("is_coding"))
+
     # ── PHASE 1: Instant evaluation (< 2 seconds) ────
     if is_coding and answer.code_text:
         # Code evaluation still uses LLM
@@ -298,6 +301,15 @@ async def submit_answer(
             ),
             "code_evaluation": code_eval,
         }
+
+        # Build a verbal follow-up about the submitted code logic
+        next_q_data = ai_service.build_code_followup_question(
+            original_question=question_doc["question"],
+            submitted_code=answer.code_text,
+            code_eval=code_eval,
+            language=answer.code_language or "python",
+            difficulty=session.get("difficulty", "medium"),
+        )
     else:
         # Two-phase: get instant score first for fast UX
         instant_eval = ai_service.evaluate_answer_instant(
@@ -339,6 +351,7 @@ async def submit_answer(
             last_score=last_score,
             jd_analysis=session.get("jd_analysis"),
             candidate_profile_context=session.get("candidate_profile_context", ""),
+            coding_count=coding_count,
         )
 
         try:
@@ -442,10 +455,11 @@ async def submit_answer(
                         last_score=evaluation.get("overall_score", 50),
                         jd_analysis=session.get("jd_analysis"),
                         candidate_profile_context=session.get("candidate_profile_context", ""),
+                        coding_count=coding_count,
                     )
 
-    # ── Generate next question (if not already done in parallel) ──
-    if is_coding or not next_q_data:
+    # ── Generate next question (if not already done in parallel or via code follow-up) ──
+    if not next_q_data:
         last_score = evaluation.get("overall_score", 50)
         next_difficulty = ai_service.determine_next_difficulty(
             last_score, session.get("difficulty", "medium")
@@ -464,6 +478,7 @@ async def submit_answer(
             last_score=last_score,
             jd_analysis=session.get("jd_analysis"),
             candidate_profile_context=session.get("candidate_profile_context", ""),
+            coding_count=coding_count,
         )
     else:
         next_difficulty = ai_service.determine_next_difficulty(

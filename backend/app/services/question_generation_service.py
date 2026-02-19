@@ -434,14 +434,34 @@ Return ONLY valid JSON:
         last_score: float = None,
         last_answer: str = None,
         candidate_profile_context: str = "",
+        coding_count: int = 0,
         **kwargs,
     ) -> Dict[str, Any]:
         """Smart question router that selects the appropriate model."""
+        import random as _rand
         # Determine question type based on round and progression
         progress = question_number / max(total_planned, 1)
 
+        # ── Probabilistic coding question insertion ──
+        # Only in Technical round, after the first conceptual questions,
+        # with decreasing probability as more coding Qs are asked.
+        # Max 2 coding questions per session.
+        should_code = False
+        if round_type == "Technical" and progress >= 0.2 and coding_count < 2:
+            # Base 25% chance, reduced by 15% for each coding Q already asked
+            coding_prob = max(0.0, 0.25 - (coding_count * 0.15))
+            should_code = _rand.random() < coding_prob
+
         if round_type == "Technical":
-            if progress < 0.3:
+            if should_code:
+                # Probabilistic coding question
+                return await self.generate_technical_question(
+                    job_role, difficulty, previous_questions,
+                    question_subtype="coding", jd_analysis=jd_analysis,
+                    last_score=last_score, last_answer=last_answer,
+                    candidate_profile_context=candidate_profile_context,
+                )
+            elif progress < 0.3:
                 # Start with conceptual
                 return await self.generate_technical_question(
                     job_role, difficulty, previous_questions,
@@ -450,11 +470,10 @@ Return ONLY valid JSON:
                     candidate_profile_context=candidate_profile_context,
                 )
             elif progress < 0.5:
-                # Move to practical/coding
-                subtype = "coding" if question_number % 3 == 0 else "system_design"
+                # Practical / system design
                 return await self.generate_technical_question(
                     job_role, difficulty, previous_questions,
-                    question_subtype=subtype, jd_analysis=jd_analysis,
+                    question_subtype="system_design", jd_analysis=jd_analysis,
                     last_score=last_score, last_answer=last_answer,
                     candidate_profile_context=candidate_profile_context,
                 )

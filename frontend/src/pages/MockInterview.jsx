@@ -1300,27 +1300,52 @@ export default function MockInterview() {
           {evaluation && (
             <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
               <h3 className="font-semibold text-gray-900 mb-3">📊 Evaluation</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
-                {[
-                  { label: 'Content', value: evaluation.content_score, color: 'blue' },
-                  { label: 'Keywords', value: evaluation.keyword_score || evaluation.keyword_coverage, color: 'orange' },
-                  { label: 'Depth', value: evaluation.depth_score, color: 'indigo' },
-                  { label: 'Communication', value: evaluation.communication_score, color: 'green' },
-                  { label: 'Overall', value: evaluation.overall_score, color: 'purple' },
-                ].map((s) => (
-                  <div key={s.label} className="text-center bg-gray-50 rounded-lg p-2">
-                    <div className={`text-xl font-bold text-${s.color}-600`}>{Math.round(s.value || 0)}%</div>
-                    <div className="text-[10px] text-gray-500">{s.label}</div>
+
+              {/* Code-specific evaluation scores */}
+              {evaluation.code_evaluation ? (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
+                    {[
+                      { label: 'Correctness', value: evaluation.code_evaluation.correctness_score, color: 'blue' },
+                      { label: 'Quality', value: evaluation.code_evaluation.quality_score, color: 'indigo' },
+                      { label: 'Efficiency', value: evaluation.code_evaluation.efficiency_score, color: 'orange' },
+                      { label: 'Edge Cases', value: evaluation.code_evaluation.edge_case_score, color: 'green' },
+                      { label: 'Overall', value: evaluation.code_evaluation.overall_score, color: 'purple' },
+                    ].map((s) => (
+                      <div key={s.label} className="text-center bg-gray-50 rounded-lg p-2">
+                        <div className={`text-xl font-bold text-${s.color}-600`}>{Math.round(s.value || 0)}%</div>
+                        <div className="text-[10px] text-gray-500">{s.label}</div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                  {evaluation.code_evaluation.feedback && (
+                    <p className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3 mb-2">{evaluation.code_evaluation.feedback}</p>
+                  )}
+                </>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-4">
+                  {[
+                    { label: 'Content', value: evaluation.content_score, color: 'blue' },
+                    { label: 'Keywords', value: evaluation.keyword_score || evaluation.keyword_coverage, color: 'orange' },
+                    { label: 'Depth', value: evaluation.depth_score, color: 'indigo' },
+                    { label: 'Communication', value: evaluation.communication_score, color: 'green' },
+                    { label: 'Overall', value: evaluation.overall_score, color: 'purple' },
+                  ].map((s) => (
+                    <div key={s.label} className="text-center bg-gray-50 rounded-lg p-2">
+                      <div className={`text-xl font-bold text-${s.color}-600`}>{Math.round(s.value || 0)}%</div>
+                      <div className="text-[10px] text-gray-500">{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className={`text-sm font-medium mb-2 ${
                 evaluation.answer_strength === 'strong' ? 'text-green-600' :
                 evaluation.answer_strength === 'moderate' ? 'text-yellow-600' : 'text-red-600'
               }`}>
                 Strength: {evaluation.answer_strength?.toUpperCase()}
               </div>
-              {evaluation.feedback && (
+              {!evaluation.code_evaluation && evaluation.feedback && (
                 <p className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3">{evaluation.feedback}</p>
               )}
               {evaluation.keywords_missed?.length > 0 && (

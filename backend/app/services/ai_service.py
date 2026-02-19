@@ -199,6 +199,7 @@ Return ONLY a JSON object:
         is_coding_question: bool = False,
         session_id: str = None,
         candidate_profile_context: str = "",
+        coding_count: int = 0,
     ) -> Dict[str, Any]:
         """Generate an adaptive interview question using specialized generators
         with RL-based difficulty calibration and redundancy checking."""
@@ -256,6 +257,7 @@ Return ONLY a JSON object:
                 last_score=last_score,
                 last_answer=previous_answers[-1] if previous_answers else None,
                 candidate_profile_context=candidate_profile_context,
+                coding_count=coding_count,
             )
 
             # Redundancy check using sentence embeddings
@@ -721,6 +723,59 @@ Provide constructive feedback: what was good, what could be improved, and one sp
             return "Decent answer but could be more detailed. Include specific examples and demonstrate deeper knowledge."
         else:
             return "Answer needs improvement. Focus on addressing the question directly with relevant examples and key concepts."
+
+    # ── Code Follow-up Question ───────────────────────
+
+    def build_code_followup_question(
+        self,
+        original_question: str,
+        submitted_code: str,
+        code_eval: Dict[str, Any],
+        language: str = "python",
+        difficulty: str = "medium",
+    ) -> Dict[str, Any]:
+        """Build a verbal follow-up question about the candidate's code logic.
+
+        Uses the follow_up_questions produced by evaluate_code(). If none are
+        available, generates a sensible default based on the code evaluation
+        scores.  The returned dict matches the standard question format and
+        is always a NON-coding verbal question (is_coding=False).
+        """
+        import random
+
+        follow_ups = code_eval.get("follow_up_questions", [])
+
+        # Pick a follow-up or generate one based on weakest area
+        if follow_ups:
+            chosen = random.choice(follow_ups)
+        else:
+            # Derive from weakest score
+            scores = {
+                "correctness": code_eval.get("correctness_score", 50),
+                "efficiency": code_eval.get("efficiency_score", 50),
+                "edge_cases": code_eval.get("edge_case_score", 50),
+                "quality": code_eval.get("quality_score", 50),
+            }
+            weakest = min(scores, key=scores.get)
+            defaults = {
+                "correctness": "Walk me through your code logic step by step. How does it handle the expected input?",
+                "efficiency": "What is the time and space complexity of your solution? Can you optimize it?",
+                "edge_cases": "What edge cases could break your solution, and how would you handle them?",
+                "quality": "How would you refactor this code to make it more readable and maintainable?",
+            }
+            chosen = defaults[weakest]
+
+        return {
+            "question": chosen,
+            "ideal_answer": f"Candidate should demonstrate deep understanding of their code: {code_eval.get('feedback', 'Explain the logic, trade-offs, and potential improvements.')}",
+            "evaluation_keywords": ["logic", "complexity", "edge cases", "optimization", "explanation"],
+            "keywords": ["logic", "complexity", "edge cases", "optimization", "explanation"],
+            "difficulty_level": difficulty,
+            "is_coding": False,
+            "question_type": "code_followup",
+            "round": "Technical",
+            "is_code_followup": True,
+        }
 
     # ── Evaluate Code Submission ──────────────────────
 
