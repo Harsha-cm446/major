@@ -1,0 +1,56 @@
+# ──────────────────────────────────────────────────────────────
+# Azure Container Apps — Deploy Backend (FastAPI)
+# Triggers on push to main when backend/ files change
+# ──────────────────────────────────────────────────────────────
+name: Deploy Backend to Azure Container Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/deploy-backend.yml"
+  workflow_dispatch: # Allow manual trigger
+
+env:
+  AZURE_RESOURCE_GROUP: ai-interview-rg
+  ACR_NAME: aiinterviewacr          # Must be globally unique, lowercase, no hyphens
+  BACKEND_APP_NAME: ai-interview-backend
+  CONTAINER_ENV_NAME: ai-interview-env
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout code ─────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Login to Azure ────────────────────
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ── 3. Login to ACR ──────────────────────
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      # ── 4. Build & Push Docker image ─────────
+      - name: Build and push backend image
+        run: |
+          IMAGE_TAG=${{ env.ACR_NAME }}.azurecr.io/ai-interview-backend:${{ github.sha }}
+          IMAGE_LATEST=${{ env.ACR_NAME }}.azurecr.io/ai-interview-backend:latest
+          
+          docker build -t $IMAGE_TAG -t $IMAGE_LATEST ./backend
+          docker push $IMAGE_TAG
+          docker push $IMAGE_LATEST
+
+      # ── 5. Deploy to Container App ───────────
+      - name: Deploy to Azure Container Apps
+        run: |
+          az containerapp update \
+            --name ${{ env.BACKEND_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.ACR_NAME }}.azurecr.io/ai-interview-backend:${{ github.sha }}
