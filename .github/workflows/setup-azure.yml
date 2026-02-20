@@ -9,7 +9,7 @@ on:
 
 env:
   AZURE_RESOURCE_GROUP: ai-interview-rg
-  LOCATION: centralindia               # Closest to India, change if needed
+  LOCATION: eastasia                    # Allowed region for student subscription
   ACR_NAME: aiinterviewacr             # Must be globally unique
   CONTAINER_ENV_NAME: ai-interview-env
   BACKEND_APP_NAME: ai-interview-backend
