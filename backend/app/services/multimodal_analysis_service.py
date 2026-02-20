@@ -43,8 +43,10 @@ except ImportError:
 try:
     from deepface import DeepFace
     DEEPFACE_AVAILABLE = True
-except ImportError:
+except (ImportError, ValueError, Exception) as e:
+    DeepFace = None
     DEEPFACE_AVAILABLE = False
+    print(f"\u26a0\ufe0f DeepFace unavailable: {e}")
 
 try:
     from ultralytics import YOLO

@@ -21,7 +21,12 @@ from collections import deque
 import numpy as np
 
 from app.services.ai_service import ai_service
-from app.services.multimodal_analysis_service import multimodal_engine, GazeStateMachine
+try:
+    from app.services.multimodal_analysis_service import multimodal_engine, GazeStateMachine
+except Exception as e:
+    multimodal_engine = None
+    GazeStateMachine = None
+    print(f"\u26a0\ufe0f Multimodal analysis unavailable in practice mode: {e}")
 from app.services.explainability_service import explainability_service
 from app.services.development_roadmap_service import development_roadmap_service
 
