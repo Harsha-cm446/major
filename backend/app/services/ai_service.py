@@ -18,7 +18,11 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 import numpy as np
-from sentence_transformers import SentenceTransformer
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
+    print("⚠️ sentence-transformers not available — embedding features disabled")
 from sklearn.metrics.pairwise import cosine_similarity
 
 import google.genai as genai

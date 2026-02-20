@@ -25,11 +25,17 @@ async def lifespan(app: FastAPI):
     # STARTUP
     await connect_to_mongo()
     # Warm up AI models so first interview starts in < 3 seconds
-    await ai_service.warm_up()
+    try:
+        await ai_service.warm_up()
+    except Exception as e:
+        print(f"⚠️ AI warm-up failed (non-fatal): {e}")
     print("🚀 AI Interview Platform ready")
     yield
     # SHUTDOWN
-    await ai_service.shutdown()
+    try:
+        await ai_service.shutdown()
+    except Exception:
+        pass
     await close_mongo_connection()
 
 
