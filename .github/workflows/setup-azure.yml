@@ -28,9 +28,23 @@ jobs:
       # ── 0. Register required resource providers ──
       - name: Register Resource Providers
         run: |
-          az provider register --namespace Microsoft.ContainerRegistry --wait
-          az provider register --namespace Microsoft.App --wait
-          az provider register --namespace Microsoft.OperationalInsights --wait
+          for NS in Microsoft.ContainerRegistry Microsoft.App Microsoft.OperationalInsights; do
+            echo "Registering $NS..."
+            az provider register --namespace $NS
+          done
+          
+          # Poll until all are registered (can take up to 10 minutes)
+          for NS in Microsoft.ContainerRegistry Microsoft.App Microsoft.OperationalInsights; do
+            echo "Waiting for $NS to be Registered..."
+            for i in $(seq 1 60); do
+              STATE=$(az provider show --namespace $NS --query "registrationState" -o tsv)
+              echo "  $NS → $STATE (attempt $i/60)"
+              if [ "$STATE" = "Registered" ]; then
+                break
+              fi
+              sleep 10
+            done
+          done
           echo "✅ All resource providers registered"
 
       # ── 1. Create Resource Group ─────────────
