@@ -37,9 +37,8 @@ def _get_email_provider() -> str:
 
 async def _send_via_resend(to_email: str, subject: str, html_body: str, plain_text: str):
     """Send email via Resend HTTPS API — works everywhere, no SMTP port needed."""
-    # Resend free tier only allows sending from onboarding@resend.dev
-    # To use a custom domain, verify it in the Resend dashboard first
-    from_address = "AI Interview Platform <onboarding@resend.dev>"
+    # Use EMAIL_FROM from settings if set, otherwise default to verified domain
+    from_address = settings.EMAIL_FROM or "AI Interview Platform <noreply@interviewai.in>"
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(
             "https://api.resend.com/emails",
