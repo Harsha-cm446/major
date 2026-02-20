@@ -316,7 +316,7 @@ Return ONLY a JSON object:
     ) -> Dict[str, Any]:
         """Fallback monolithic question generator using direct Gemini call."""
 
-        prev_q_text = "\n".join(f"- {q}" for q in previous_questions[-30:]) if previous_questions else "None"
+        prev_q_text = "\n".join(f"- {q}" for q in previous_questions[-15:]) if previous_questions else "None"
         prev_a_text = ""
         if previous_answers and len(previous_answers) > 0:
             last_answer = previous_answers[-1] if previous_answers else ""

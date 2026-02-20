@@ -163,7 +163,7 @@ RULES:
 - Good example: "Tell me about a time you resolved a team conflict."
 - Bad example: "Can you describe a situation in your previous role where you encountered a significant challenge with a team member, detailing what happened, what you did, and what the outcome was?"
 
-Previously asked (DO NOT repeat): {json.dumps(previous_questions[:5])}
+Previously asked (DO NOT repeat any of these): {json.dumps(previous_questions[-15:])}
 
 Return ONLY valid JSON:
 {{
@@ -260,7 +260,7 @@ RULES:
 - Good: "How would you optimize a slow SQL query?"
 - Bad: "Can you explain in detail the various differences between TCP and UDP protocols, including their use cases, advantages, disadvantages, and when you would choose one over the other?"
 
-Previously asked: {json.dumps(previous_questions[:5])}
+Previously asked (NEVER repeat): {json.dumps(previous_questions[-15:])}
 
 Return ONLY valid JSON:
 {{
@@ -327,7 +327,7 @@ RULES:
 - Good: "Your team misses a sprint deadline. How do you handle it?"
 - Bad: "Imagine you are working on a critical project and your team has been struggling with meeting deadlines due to various factors including scope creep and resource constraints. How would you approach this situation?"
 
-Previously asked: {json.dumps(previous_questions[:5])}
+Previously asked (NEVER repeat): {json.dumps(previous_questions[-15:])}
 
 Return ONLY valid JSON:
 {{
@@ -387,7 +387,7 @@ RULES:
 - Good: "What kind of work environment helps you do your best work?"
 - Bad: "Can you describe in detail the type of organizational culture and work environment that you find most conducive to your professional growth and productivity?"
 
-Previously asked: {json.dumps(previous_questions[:5])}
+Previously asked (NEVER repeat): {json.dumps(previous_questions[-15:])}
 
 Return ONLY valid JSON:
 {{
@@ -519,7 +519,26 @@ Return ONLY valid JSON:
         """Check if a new question is too similar to previously asked questions.
         Returns True if redundant (should be rejected).
         """
-        if not previous_questions or not self.embedding_model:
+        if not previous_questions:
+            return False
+
+        # Fast text-based check first (works even without embedding model)
+        new_lower = new_question.lower().strip()
+        for prev in previous_questions:
+            prev_lower = prev.lower().strip()
+            # Exact or near-exact match
+            if new_lower == prev_lower:
+                return True
+            # High word overlap check
+            new_words = set(new_lower.split())
+            prev_words = set(prev_lower.split())
+            if new_words and prev_words:
+                overlap = len(new_words & prev_words) / max(len(new_words), len(prev_words))
+                if overlap > 0.8:
+                    return True
+
+        # Semantic similarity check (if embedding model available)
+        if not self.embedding_model:
             return False
 
         embeddings = self.embedding_model.encode(
