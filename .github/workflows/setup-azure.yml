@@ -25,6 +25,14 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      # ── 0. Register required resource providers ──
+      - name: Register Resource Providers
+        run: |
+          az provider register --namespace Microsoft.ContainerRegistry --wait
+          az provider register --namespace Microsoft.App --wait
+          az provider register --namespace Microsoft.OperationalInsights --wait
+          echo "✅ All resource providers registered"
+
       # ── 1. Create Resource Group ─────────────
       - name: Create Resource Group
         run: |
