@@ -74,49 +74,65 @@ jobs:
       # ── 4. Create Backend Container App ──────
       - name: Create Backend Container App
         run: |
-          az containerapp create \
-            --name ${{ env.BACKEND_APP_NAME }} \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --environment ${{ env.CONTAINER_ENV_NAME }} \
-            --image mcr.microsoft.com/k8se/quickstart:latest \
-            --target-port 8000 \
-            --ingress external \
-            --min-replicas 0 \
-            --max-replicas 1 \
-            --cpu 1.0 \
-            --memory 2.0Gi \
-            --registry-server ${{ env.ACR_NAME }}.azurecr.io \
-            --registry-username $(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv) \
-            --registry-password $(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv) \
-            --env-vars \
-              MONGODB_URL="${{ secrets.MONGODB_URL }}" \
-              DATABASE_NAME="ai_interview_platform" \
-              JWT_SECRET_KEY="${{ secrets.JWT_SECRET_KEY }}" \
-              JWT_ALGORITHM="HS256" \
-              ACCESS_TOKEN_EXPIRE_MINUTES="1440" \
-              GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
-              GEMINI_MODEL="gemini-2.5-flash" \
-              FRONTEND_URL="https://placeholder.azurecontainerapps.io" \
-              EMAIL_PROVIDER="resend" \
-              RESEND_API_KEY="${{ secrets.RESEND_API_KEY }}"
+          ACR_USER=$(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          
+          for ATTEMPT in 1 2 3; do
+            echo "🔄 Attempt $ATTEMPT/3 — Creating backend container app..."
+            az containerapp create \
+              --name ${{ env.BACKEND_APP_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_ENV_NAME }} \
+              --image mcr.microsoft.com/k8se/quickstart:latest \
+              --target-port 8000 \
+              --ingress external \
+              --min-replicas 0 \
+              --max-replicas 1 \
+              --cpu 0.5 \
+              --memory 1.0Gi \
+              --registry-server ${{ env.ACR_NAME }}.azurecr.io \
+              --registry-username "$ACR_USER" \
+              --registry-password "$ACR_PASS" \
+              --env-vars \
+                MONGODB_URL="${{ secrets.MONGODB_URL }}" \
+                DATABASE_NAME="ai_interview_platform" \
+                JWT_SECRET_KEY="${{ secrets.JWT_SECRET_KEY }}" \
+                JWT_ALGORITHM="HS256" \
+                ACCESS_TOKEN_EXPIRE_MINUTES="1440" \
+                GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
+                GEMINI_MODEL="gemini-2.5-flash" \
+                FRONTEND_URL="https://placeholder.azurecontainerapps.io" \
+                EMAIL_PROVIDER="resend" \
+                RESEND_API_KEY="${{ secrets.RESEND_API_KEY }}" \
+              && echo "✅ Backend created!" && break \
+              || { echo "⚠️ Attempt $ATTEMPT failed, waiting 30s..."; sleep 30; }
+          done
 
       # ── 5. Create Frontend Container App ─────
       - name: Create Frontend Container App
         run: |
-          az containerapp create \
-            --name ${{ env.FRONTEND_APP_NAME }} \
-            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --environment ${{ env.CONTAINER_ENV_NAME }} \
-            --image mcr.microsoft.com/k8se/quickstart:latest \
-            --target-port 80 \
-            --ingress external \
-            --min-replicas 0 \
-            --max-replicas 1 \
-            --cpu 0.25 \
-            --memory 0.5Gi \
-            --registry-server ${{ env.ACR_NAME }}.azurecr.io \
-            --registry-username $(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv) \
-            --registry-password $(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          ACR_USER=$(az acr credential show --name ${{ env.ACR_NAME }} --query username -o tsv)
+          ACR_PASS=$(az acr credential show --name ${{ env.ACR_NAME }} --query "passwords[0].value" -o tsv)
+          
+          for ATTEMPT in 1 2 3; do
+            echo "🔄 Attempt $ATTEMPT/3 — Creating frontend container app..."
+            az containerapp create \
+              --name ${{ env.FRONTEND_APP_NAME }} \
+              --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+              --environment ${{ env.CONTAINER_ENV_NAME }} \
+              --image mcr.microsoft.com/k8se/quickstart:latest \
+              --target-port 80 \
+              --ingress external \
+              --min-replicas 0 \
+              --max-replicas 1 \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --registry-server ${{ env.ACR_NAME }}.azurecr.io \
+              --registry-username "$ACR_USER" \
+              --registry-password "$ACR_PASS" \
+              && echo "✅ Frontend created!" && break \
+              || { echo "⚠️ Attempt $ATTEMPT failed, waiting 30s..."; sleep 30; }
+          done
 
       # ── 6. Output URLs ───────────────────────
       - name: Get Application URLs
