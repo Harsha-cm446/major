@@ -27,6 +27,15 @@ from app.services.ai_service import ai_service
 from app.services.report_service import generate_pdf_report
 from app.services.practice_mode_service import practice_mode_service
 
+try:
+    from app.services.multimodal_analysis_service import multimodal_engine, GazeStateMachine
+except Exception:
+    multimodal_engine = None
+    GazeStateMachine = None
+
+# Per-candidate-session gaze FSMs (keyed by ai_session ObjectId string)
+_candidate_gaze_fsms = {}
+
 router = APIRouter(prefix="/api/candidate-interview", tags=["Candidate AI Interview"])
 
 TECH_CUTOFF = 70.0
@@ -737,6 +746,8 @@ async def _complete_candidate_session(db, ai_session: dict, candidate: dict, all
         ai_service.cleanup_session(session_id)
         from app.services.rl_adaptation_service import rl_adaptation_service
         rl_adaptation_service.cleanup_session(session_id)
+        # Clean up gaze FSM for this candidate session
+        _candidate_gaze_fsms.pop(session_id, None)
     except Exception:
         pass
 
@@ -826,7 +837,10 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
     """
     Analyze a video frame for gaze direction and multi-person detection.
     Token-based (no auth), used by CandidateJoin for live proctoring.
-    Reuses the practice_mode_service gaze FSM.
+
+    Uses the same real Haar-cascade eye-tracking + GazeStateMachine logic
+    that the student/practice mode uses — no estimation or jitter, only
+    actual CV2 gaze detection results are fed into the FSM.
     """
     db = get_database()
     candidate = await _get_candidate_by_token(token)
@@ -835,30 +849,44 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
         raise HTTPException(status_code=404, detail="Interview not started")
 
     session_id = str(ai_session["_id"])
-    practice_id = f"candidate_{session_id}"
 
-    # Ensure a practice session tracker exists for gaze FSM
-    if practice_id not in practice_mode_service._active_sessions:
-        practice_mode_service._active_sessions[practice_id] = {
-            "user_id": token,
-            "status": "active",
-            "started_at": datetime.utcnow(),
-            "metrics_history": [],
-            "live_metrics": {},
-            "current_question_idx": 0,
-            "answers": [],
-            "questions": [],
-            "topic": "candidate_interview",
-            "topic_name": "Candidate Interview",
-        }
+    # Ensure a GazeStateMachine exists for this candidate session
+    if session_id not in _candidate_gaze_fsms:
+        if GazeStateMachine is None:
+            return {"gaze": {"state": "ATTENTIVE", "show_warning": False}, "person_count": 0}
+        _candidate_gaze_fsms[session_id] = GazeStateMachine()
 
-    result = practice_mode_service.update_live_metrics(
-        practice_id,
-        partial_text="",
-        video_frame=body.video_frame,
-    )
+    gaze_fsm = _candidate_gaze_fsms[session_id]
+    gaze_state_output = None
+    person_count = 0
+
+    if body.video_frame and multimodal_engine is not None:
+        try:
+            # Real face + eye analysis (Haar cascade gaze estimation)
+            visual = multimodal_engine.analyze_face(body.video_frame)
+
+            # Person count via YOLO / Haar fallback
+            person_count = multimodal_engine.detect_persons(body.video_frame)
+
+            # Extract the real eye_contact_score produced by _estimate_gaze
+            eye_contact_score = visual.get("eye_contact_score")
+            if eye_contact_score is not None:
+                # Feed actual gaze score into the FSM (same as practice mode)
+                gaze_state_output = gaze_fsm.update(eye_contact_score)
+            else:
+                gaze_state_output = gaze_fsm.check_staleness()
+
+        except Exception as exc:
+            print(f"[CANDIDATE GAZE] Exception in video processing: {exc}")
+            gaze_state_output = gaze_fsm.check_staleness()
+    else:
+        # No video frame this tick — check for camera freeze / dropped frames
+        gaze_state_output = gaze_fsm.check_staleness()
 
     return {
-        "gaze": result.get("gaze"),
-        "person_count": result.get("person_count", 0),
+        "gaze": gaze_state_output or {
+            "state": gaze_fsm.state.value,
+            "show_warning": gaze_fsm.show_warning,
+        },
+        "person_count": person_count,
     }
