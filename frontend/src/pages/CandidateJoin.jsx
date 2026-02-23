@@ -11,6 +11,25 @@ import {
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  // Free TURN servers for NAT traversal (mobile networks / symmetric NAT)
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
 ];
 
 export default function CandidateJoin() {
@@ -60,7 +79,10 @@ export default function CandidateJoin() {
   const autoListenRef = useRef(false);
   const isSubmittingRef = useRef(false);
   const answerRef = useRef('');
+  const submitRef = useRef(null);           // always-latest submit function ref
   const SILENCE_TIMEOUT = 3500;
+  const [speechSupported, setSpeechSupported] = useState(true);
+  const [manualAnswer, setManualAnswer] = useState('');
 
   // ── Load interview info ────────────────────────────
   useEffect(() => {
@@ -117,11 +139,13 @@ export default function CandidateJoin() {
     synthRef.current.speak(utterance);
   }, [ttsEnabled]);
 
-  // ── Speech-to-text ─────────────────────────────────
+  // ── Speech-to-text (Web Speech API) — Live Conversation Mode ──
   const startSpeechRecognition = useCallback(() => {
+    if (recognitionRef.current || isSubmittingRef.current) return;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) {
-      toast.error('Speech recognition not supported in this browser');
+      setSpeechSupported(false);
+      toast.error('Speech recognition not supported — use the text box to type your answer');
       return;
     }
     const recognition = new SR();
@@ -129,7 +153,24 @@ export default function CandidateJoin() {
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
-    let finalTranscript = answer;
+    let finalTranscript = answerRef.current;
+
+    // Reset silence timer whenever we get speech
+    const resetSilenceTimer = () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = setTimeout(() => {
+        // Silence detected — auto-submit if there's enough answer text
+        if (answerRef.current.trim().length >= 5 && !isSubmittingRef.current) {
+          autoListenRef.current = false;
+          if (recognitionRef.current) {
+            recognitionRef.current.stop();
+            recognitionRef.current = null;
+          }
+          setIsRecording(false);
+          if (submitRef.current) submitRef.current();
+        }
+      }, SILENCE_TIMEOUT);
+    };
 
     recognition.onresult = (event) => {
       let interim = '';
@@ -141,20 +182,56 @@ export default function CandidateJoin() {
           interim += t;
         }
       }
-      setAnswer(finalTranscript.trim() + (interim ? ' ' + interim : ''));
+      const newAnswer = finalTranscript.trim() + (interim ? ' ' + interim : '');
+      setAnswer(newAnswer);
+      answerRef.current = newAnswer;
+      // User is speaking — reset the silence timer
+      resetSilenceTimer();
     };
 
     recognition.onerror = (event) => {
-      if (event.error !== 'no-speech') console.error('Speech error:', event.error);
+      if (event.error !== 'no-speech' && event.error !== 'aborted') {
+        console.error('Speech recognition error:', event.error);
+      }
+      // On mobile, 'not-allowed' means mic permission denied
+      if (event.error === 'not-allowed') {
+        setSpeechSupported(false);
+        toast.error('Microphone access denied for speech recognition. Use the text box instead.');
+      }
     };
-    recognition.onend = () => setIsRecording(false);
 
-    recognition.start();
-    recognitionRef.current = recognition;
-    setIsRecording(true);
-  }, [answer]);
+    recognition.onend = () => {
+      setIsRecording(false);
+      recognitionRef.current = null;
+      // Auto-restart if we're still in conversation mode and not submitting
+      // This is critical for mobile browsers that stop recognition unexpectedly
+      if (autoListenRef.current && !isSubmittingRef.current) {
+        setTimeout(() => {
+          if (autoListenRef.current && !isSubmittingRef.current) {
+            startSpeechRecognition();
+          }
+        }, 300);
+      }
+    };
+
+    try {
+      recognition.start();
+      recognitionRef.current = recognition;
+      setIsRecording(true);
+      // Start silence timer
+      resetSilenceTimer();
+    } catch (e) {
+      console.error('Failed to start recognition:', e);
+      setSpeechSupported(false);
+    }
+  }, []);
 
   const stopSpeechRecognition = useCallback(() => {
+    autoListenRef.current = false;
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
     if (recognitionRef.current) {
       recognitionRef.current.stop();
       recognitionRef.current = null;
@@ -163,8 +240,12 @@ export default function CandidateJoin() {
   }, []);
 
   const toggleRecording = useCallback(() => {
-    if (isRecording) stopSpeechRecognition();
-    else startSpeechRecognition();
+    if (isRecording) {
+      stopSpeechRecognition();
+    } else {
+      autoListenRef.current = true;
+      startSpeechRecognition();
+    }
   }, [isRecording, startSpeechRecognition, stopSpeechRecognition]);
 
   // ── Camera ─────────────────────────────────────────
@@ -175,9 +256,18 @@ export default function CandidateJoin() {
       setCameraOn(false);
     } else {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        // Request video and audio separately for better mobile compatibility
+        const constraints = {
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: true,
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         streamRef.current = stream;
-        if (videoRef.current) videoRef.current.srcObject = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          // Explicit play() for mobile browsers
+          try { await videoRef.current.play(); } catch (e) { console.log('Video autoplay handled:', e); }
+        }
         setCameraOn(true);
       } catch {
         toast.error('Camera access denied');
@@ -314,6 +404,25 @@ export default function CandidateJoin() {
     };
   }, [phase, interviewSessionId]);
 
+  // Re-notify HR when camera/screen state changes
+  useEffect(() => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'stream_ready',
+        has_camera: cameraOn,
+        has_screen: !!screenStreamRef.current,
+      }));
+    }
+  }, [cameraOn, screenSharing]);
+
+  // Re-attach camera stream to video element when entering interview phase
+  useEffect(() => {
+    if (phase === 'interview' && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [phase]);
+
   const handleWSMessage = useCallback(async (data) => {
     switch (data.type) {
       case 'request_stream':
@@ -398,36 +507,60 @@ export default function CandidateJoin() {
     setPermissionDenied(false);
     setPermissionError('');
 
-    // Request camera + mic permissions first
+    // Request camera + mic permissions first (mobile-friendly constraints)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const constraints = {
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
-      if (videoRef.current) videoRef.current.srcObject = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        // Explicit play() for mobile browsers — required on iOS/Android
+        try { await videoRef.current.play(); } catch (e) { console.log('Video autoplay handled:', e); }
+      }
       setCameraOn(true);
     } catch (err) {
-      setPermissionDenied(true);
-      if (err.name === 'NotAllowedError') {
-        setPermissionError('Camera and microphone access is required to start the interview. Please allow access in your browser settings and try again.');
-      } else if (err.name === 'NotFoundError') {
-        setPermissionError('No camera or microphone found. Please connect a camera and microphone to start the interview.');
-      } else {
-        setPermissionError(`Unable to access camera/microphone: ${err.message}. Please check your device settings.`);
+      // On mobile, try audio-only if video fails
+      try {
+        const audioOnlyStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = audioOnlyStream;
+        setCameraOn(false);
+        toast('Camera not available — continuing with audio only', { icon: '🎤' });
+      } catch (audioErr) {
+        setPermissionDenied(true);
+        if (err.name === 'NotAllowedError') {
+          setPermissionError('Camera and microphone access is required to start the interview. Please allow access in your browser settings and try again.');
+        } else if (err.name === 'NotFoundError') {
+          setPermissionError('No camera or microphone found. Please connect a camera and microphone to start the interview.');
+        } else {
+          setPermissionError(`Unable to access camera/microphone: ${err.message}. Please check your device settings.`);
+        }
+        return;
       }
-      return;
     }
 
     // Request screen share before API call (needs user gesture)
-    try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-      screenStreamRef.current = screenStream;
-      setScreenSharing(true);
-      screenStream.getVideoTracks()[0].onended = () => {
-        screenStreamRef.current = null;
-        setScreenSharing(false);
-      };
-    } catch {
-      // Screen share is optional — candidate can decline
-      console.log('Screen share not captured');
+    // Skip on mobile devices — getDisplayMedia is not supported
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (!isMobile) {
+      try {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        screenStreamRef.current = screenStream;
+        setScreenSharing(true);
+        screenStream.getVideoTracks()[0].onended = () => {
+          screenStreamRef.current = null;
+          setScreenSharing(false);
+        };
+      } catch {
+        // Screen share is optional — candidate can decline
+        console.log('Screen share not captured');
+      }
     }
 
     setLoading(true);
@@ -534,8 +667,11 @@ export default function CandidateJoin() {
     doSubmit(answerRef.current);
   }, [currentQuestion, token, codeText, codeLanguage, currentRound]);
 
+  // Keep submitRef always pointing to the latest auto-submit function
+  useEffect(() => { submitRef.current = submitAnswerAuto; }, [submitAnswerAuto]);
+
   // Manual submit (button click)
-  const submitAnswer = () => doSubmit(answer);
+  const submitAnswer = () => doSubmit(answer || manualAnswer);
 
   // ── Format time ────────────────────────────────────
   const formatTime = (timeStatus) => {
@@ -965,27 +1101,49 @@ export default function CandidateJoin() {
                         AI Speaking
                       </span>
                     )}
-                    <button
-                      onClick={toggleRecording}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition ${
-                        isRecording ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
-                      }`}
-                      title={isRecording ? 'Pause mic' : 'Resume mic'}
-                    >
-                      {isRecording ? <MicOff size={14} /> : <Mic size={14} />}
-                      {isRecording ? 'Pause' : 'Resume'}
-                    </button>
+                    {speechSupported && (
+                      <button
+                        onClick={toggleRecording}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition ${
+                          isRecording ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200'
+                        }`}
+                        title={isRecording ? 'Pause mic' : 'Resume mic'}
+                      >
+                        {isRecording ? <MicOff size={14} /> : <Mic size={14} />}
+                        {isRecording ? 'Pause' : 'Resume'}
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className={`w-full min-h-[120px] px-4 py-3 border rounded-lg text-gray-700 text-base leading-relaxed ${
+                {/* Voice transcript display */}
+                <div className={`w-full min-h-[80px] px-4 py-3 border rounded-lg text-gray-700 text-base leading-relaxed ${
                   isRecording ? 'border-green-400 bg-green-50/50' : isSpeaking ? 'border-blue-300 bg-blue-50/30' : 'border-gray-200 bg-gray-50'
                 }`}>
                   {answer || (
                     <span className="text-gray-400 italic">
-                      {isSpeaking ? 'AI is speaking... listen to the question' : isRecording ? '🎤 Listening... speak your answer naturally' : 'Microphone paused'}
+                      {isSpeaking ? 'AI is speaking... listen to the question' : isRecording ? '🎤 Listening... speak your answer naturally' : speechSupported ? 'Microphone paused' : 'Type your answer below'}
                     </span>
                   )}
                 </div>
+                {/* Text input fallback for mobile / unsupported browsers */}
+                {(!speechSupported || !isRecording) && (
+                  <div className="mt-3">
+                    <label className="block text-xs font-medium text-gray-500 mb-1">
+                      {speechSupported ? 'Or type your answer:' : '✏️ Type your answer here:'}
+                    </label>
+                    <textarea
+                      value={manualAnswer}
+                      onChange={(e) => {
+                        setManualAnswer(e.target.value);
+                        setAnswer(e.target.value);
+                        answerRef.current = e.target.value;
+                      }}
+                      rows={3}
+                      placeholder="Type your answer here..."
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none resize-none text-sm"
+                    />
+                  </div>
+                )}
                 {isRecording && !isSpeaking && (
                   <div className="flex items-center justify-between mt-2">
                     <div className="flex items-center space-x-2 text-green-600 text-sm">

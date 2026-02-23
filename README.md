@@ -215,7 +215,7 @@ EMAIL_FROM=your-email@gmail.com
 2. Go to [dashboard.render.com](https://dashboard.render.com) → **New** → **Blueprint**
 3. Connect your repo → Render reads `render.yaml` and creates both services
 4. Set these environment variables:
-   - **Backend**: `MONGODB_URL` (Atlas connection string), `GEMINI_API_KEY`, `FRONTEND_URL`, `RESEND_API_KEY`
+   - **Backend**: `MONGODB_URL` (Atlas connection string), `GEMINI_API_KEY`, `FRONTEND_URL`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM`
    - **Frontend**: `VITE_API_URL` (e.g. `https://ai-interview-backend.onrender.com/api`), `VITE_WS_URL` (e.g. `wss://ai-interview-backend.onrender.com`)
 
 ---

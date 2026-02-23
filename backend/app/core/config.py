@@ -11,10 +11,10 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
 
-    # Email — supports Resend (HTTPS API) or SMTP fallback
-    # Priority: Resend > SMTP. Set RESEND_API_KEY to use Resend.
-    EMAIL_PROVIDER: str = "auto"  # "resend", "smtp", or "auto" (tries resend first)
-    RESEND_API_KEY: str = ""
+    # Email — SMTP only (works reliably from Azure and all hosting platforms)
+    # For Gmail: SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, use App Password
+    # For Outlook: SMTP_HOST=smtp.office365.com, SMTP_PORT=587
+    # For Azure Communication Services: SMTP_HOST=smtp.azurecomm.net, SMTP_PORT=587
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
     SMTP_USER: str = ""

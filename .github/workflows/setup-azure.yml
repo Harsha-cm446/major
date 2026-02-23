@@ -102,8 +102,11 @@ jobs:
                 GEMINI_API_KEY="${{ secrets.GEMINI_API_KEY }}" \
                 GEMINI_MODEL="gemini-2.5-flash" \
                 FRONTEND_URL="https://placeholder.azurecontainerapps.io" \
-                EMAIL_PROVIDER="resend" \
-                RESEND_API_KEY="${{ secrets.RESEND_API_KEY }}" \
+                SMTP_HOST="${{ secrets.SMTP_HOST }}" \
+                SMTP_PORT="${{ secrets.SMTP_PORT }}" \
+                SMTP_USER="${{ secrets.SMTP_USER }}" \
+                SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
+                EMAIL_FROM="${{ secrets.EMAIL_FROM }}" \
               && echo "✅ Backend created!" && break \
               || { echo "⚠️ Attempt $ATTEMPT failed, waiting 30s..."; sleep 30; }
           done

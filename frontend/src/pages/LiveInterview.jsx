@@ -11,6 +11,25 @@ import {
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  // Free TURN servers for NAT traversal (critical for mobile networks)
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
 ];
 
 export default function LiveInterview() {
@@ -137,19 +156,36 @@ export default function LiveInterview() {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConnectionRef.current = pc;
 
-    // Collect incoming streams — deduplicate by stream id
-    const seenStreams = new Set();
-    let streamIndex = 0;
+    // Collect incoming streams — identify by track kind and stream id
+    const assignedStreams = new Map(); // stream.id -> 'camera' | 'screen'
+    let cameraAssigned = false;
+
     pc.ontrack = (event) => {
       const stream = event.streams[0];
-      if (!stream || seenStreams.has(stream.id)) return;
-      seenStreams.add(stream.id);
-      if (streamIndex === 0) {
+      if (!stream) return;
+
+      // Determine stream type: first video stream is camera, second is screen
+      // Also check track label for hints (screen shares often have 'screen' or 'display' in label)
+      const trackLabel = (event.track.label || '').toLowerCase();
+      const isScreenTrack = trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('monitor') || trackLabel.includes('window');
+
+      if (!assignedStreams.has(stream.id)) {
+        if (isScreenTrack) {
+          assignedStreams.set(stream.id, 'screen');
+        } else if (!cameraAssigned) {
+          assignedStreams.set(stream.id, 'camera');
+          cameraAssigned = true;
+        } else {
+          assignedStreams.set(stream.id, 'screen');
+        }
+      }
+
+      const streamType = assignedStreams.get(stream.id);
+      if (streamType === 'camera') {
         setCameraStream(stream);
       } else {
         setScreenStream(stream);
       }
-      streamIndex++;
     };
 
     pc.onicecandidate = (event) => {
@@ -269,16 +305,18 @@ export default function LiveInterview() {
     return `${mins}:${String(secs).padStart(2, '0')}`;
   };
 
-  // ── Attach streams to video elements ───────────────
+  // ── Attach streams to video elements (with explicit play for mobile) ───
   useEffect(() => {
     if (cameraVideoRef.current && cameraStream) {
       cameraVideoRef.current.srcObject = cameraStream;
+      cameraVideoRef.current.play().catch(() => {});
     }
   }, [cameraStream]);
 
   useEffect(() => {
     if (screenVideoRef.current && screenStream) {
       screenVideoRef.current.srcObject = screenStream;
+      screenVideoRef.current.play().catch(() => {});
     }
   }, [screenStream]);
 

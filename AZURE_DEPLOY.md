@@ -87,14 +87,18 @@ Add these secrets:
 | `MONGODB_URL` | Your MongoDB Atlas connection string from Step 1 |
 | `JWT_SECRET_KEY` | A random string (run `openssl rand -hex 32` to generate) |
 | `GEMINI_API_KEY` | Your Google Gemini API key |
-| `RESEND_API_KEY` | Your Resend email API key (optional) |
+| `SMTP_HOST` | SMTP server hostname (e.g. `smtp.gmail.com`) |
+| `SMTP_PORT` | SMTP port (e.g. `587`) |
+| `SMTP_USER` | SMTP username / email address |
+| `SMTP_PASSWORD` | SMTP password or app password |
+| `EMAIL_FROM` | Sender email (e.g. `noreply@yourdomain.com`) |
 | `BACKEND_FQDN` | *(Set after Step 4 — leave empty for now)* |
 
 ---
 
 ### STEP 4: Run Infrastructure Setup
 
-1. Go to your GitHub repo → **Actions** tab
+1. Go to your GitHub repo → **Actions** tabaz --versionaz --versionaz --version
 2. Click **"Setup Azure Infrastructure"** workflow on the left
 3. Click **"Run workflow"** → **"Run workflow"** (green button)
 4. Wait ~3-5 minutes for it to complete

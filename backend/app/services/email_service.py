@@ -1,113 +1,80 @@
 """
-Email Service — Supports Resend (HTTPS API) and SMTP fallback
-──────────────────────────────────────────────────────────────
-Priority: Resend > SMTP. Resend works on all hosting platforms
-including those that block outbound SMTP (Render, Vercel, etc.)
+Email Service — SMTP Only
+──────────────────────────
+Sends emails via SMTP (e.g. Gmail, Outlook, Azure SMTP relay).
+Works reliably from Azure deployments and all hosting platforms.
 
 Setup:
-  Resend: Set RESEND_API_KEY in .env (free at https://resend.com)
-  SMTP:   Set SMTP_USER + SMTP_PASSWORD in .env
+  Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM in .env
+  
+  For Gmail:  SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, use App Password
+  For Outlook: SMTP_HOST=smtp.office365.com, SMTP_PORT=587
+  For Azure Communication Services: SMTP_HOST=smtp.azurecomm.net, SMTP_PORT=587
 """
 
-import httpx
+import ssl
 import aiosmtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from typing import List
 from app.core.config import settings
 
 
-# ── Provider Selection ────────────────────────────────
-
-def _get_email_provider() -> str:
-    """Determine which email provider to use."""
-    if settings.EMAIL_PROVIDER == "resend":
-        return "resend"
-    if settings.EMAIL_PROVIDER == "smtp":
-        return "smtp"
-    # Auto-detect: prefer Resend if API key is set
-    if settings.RESEND_API_KEY:
-        return "resend"
-    if settings.SMTP_USER and settings.SMTP_PASSWORD:
-        return "smtp"
-    return "none"
-
-
-# ── Resend (HTTPS API) ───────────────────────────────
-
-async def _send_via_resend(to_email: str, subject: str, html_body: str, plain_text: str):
-    """Send email via Resend HTTPS API — works everywhere, no SMTP port needed."""
-    # Use EMAIL_FROM from settings if set, otherwise default to verified domain
-    from_address = settings.EMAIL_FROM or "AI Interview Platform <noreply@interviewai.in>"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            "https://api.resend.com/emails",
-            headers={
-                "Authorization": f"Bearer {settings.RESEND_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "from": from_address,
-                "to": [to_email],
-                "subject": subject,
-                "html": html_body,
-                "text": plain_text,
-            },
-        )
-        if resp.status_code not in (200, 201):
-            raise Exception(f"Resend API error {resp.status_code}: {resp.text}")
-
-
-# ── SMTP Fallback ─────────────────────────────────────
+# ── SMTP Send ─────────────────────────────────────────
 
 async def _send_via_smtp(to_email: str, subject: str, html_body: str, plain_text: str):
-    """Send email via SMTP — works on local machines and hosts that allow port 587."""
+    """Send email via SMTP with robust TLS handling for Azure and other hosts."""
+    if not settings.SMTP_USER or not settings.SMTP_PASSWORD:
+        print(f"⚠️ SMTP not configured. Skipping email to {to_email}")
+        print(f"   Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, EMAIL_FROM in .env")
+        return
+
     message = MIMEMultipart("alternative")
-    message["From"] = settings.EMAIL_FROM
+    message["From"] = settings.EMAIL_FROM or settings.SMTP_USER
     message["To"] = to_email
     message["Subject"] = subject
     message.attach(MIMEText(plain_text, "plain"))
     message.attach(MIMEText(html_body, "html"))
 
-    await aiosmtplib.send(
-        message,
-        hostname=settings.SMTP_HOST,
-        port=settings.SMTP_PORT,
-        start_tls=True,
-        username=settings.SMTP_USER,
-        password=settings.SMTP_PASSWORD,
-    )
+    smtp_kwargs = {
+        "hostname": settings.SMTP_HOST,
+        "port": settings.SMTP_PORT,
+        "username": settings.SMTP_USER,
+        "password": settings.SMTP_PASSWORD,
+        "timeout": 30,
+    }
+
+    # Port 465 uses implicit SSL; port 587 (and others) use STARTTLS
+    if settings.SMTP_PORT == 465:
+        smtp_kwargs["use_tls"] = True
+    else:
+        smtp_kwargs["start_tls"] = True
+
+    try:
+        await aiosmtplib.send(message, **smtp_kwargs)
+        print(f"✅ Email sent to {to_email} (via SMTP)")
+    except aiosmtplib.SMTPConnectError as e:
+        print(f"❌ SMTP connection failed: {e}")
+        # Retry with relaxed TLS (some Azure/cloud hosts need this)
+        try:
+            tls_context = ssl.create_default_context()
+            tls_context.check_hostname = False
+            tls_context.verify_mode = ssl.CERT_NONE
+            smtp_kwargs["tls_context"] = tls_context
+            await aiosmtplib.send(message, **smtp_kwargs)
+            print(f"✅ Email sent to {to_email} (via SMTP with relaxed TLS)")
+        except Exception as retry_err:
+            print(f"❌ SMTP retry also failed: {retry_err}")
+            raise
+    except Exception as e:
+        print(f"❌ SMTP error for {to_email}: {e}")
+        raise
 
 
 # ── Unified Send ─────────────────────────────────────
 
 async def _send_email(to_email: str, subject: str, html_body: str, plain_text: str):
-    """Send an email using the configured provider, with auto-fallback."""
-    provider = _get_email_provider()
-
-    if provider == "resend":
-        try:
-            await _send_via_resend(to_email, subject, html_body, plain_text)
-            print(f"✅ Email sent to {to_email} (via Resend)")
-            return
-        except Exception as e:
-            print(f"⚠️ Resend failed for {to_email}: {e}")
-            # Auto-fallback to SMTP if configured
-            if settings.SMTP_USER and settings.SMTP_PASSWORD:
-                print(f"   Falling back to SMTP...")
-                try:
-                    await _send_via_smtp(to_email, subject, html_body, plain_text)
-                    print(f"✅ Email sent to {to_email} (via SMTP fallback)")
-                    return
-                except Exception as smtp_err:
-                    print(f"❌ SMTP fallback also failed: {smtp_err}")
-            raise
-    elif provider == "smtp":
-        await _send_via_smtp(to_email, subject, html_body, plain_text)
-        print(f"✅ Email sent to {to_email} (via SMTP)")
-    else:
-        print(f"⚠️ No email provider configured. Skipping email to {to_email}")
-        print(f"   Set RESEND_API_KEY or SMTP_USER/SMTP_PASSWORD in .env")
+    """Send an email using SMTP."""
+    await _send_via_smtp(to_email, subject, html_body, plain_text)
 
 
 # ── Public API ────────────────────────────────────────

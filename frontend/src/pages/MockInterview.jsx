@@ -227,9 +227,20 @@ export default function MockInterview() {
       setCameraOn(false);
     } else {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        const constraints = {
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         streamRef.current = stream;
-        if (videoRef.current) videoRef.current.srcObject = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          try { await videoRef.current.play(); } catch (e) { console.log('Video autoplay handled:', e); }
+        }
         setCameraOn(true);
       } catch {
         toast.error('Camera access denied');
@@ -504,22 +515,41 @@ export default function MockInterview() {
     setPermissionDenied(false);
     setPermissionError('');
 
-    // Request camera + mic permissions first
+    // Request camera + mic permissions first (mobile-friendly constraints)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const constraints = {
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
-      if (videoRef.current) videoRef.current.srcObject = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        try { await videoRef.current.play(); } catch (e) { console.log('Video autoplay handled:', e); }
+      }
       setCameraOn(true);
     } catch (err) {
-      setPermissionDenied(true);
-      if (err.name === 'NotAllowedError') {
-        setPermissionError('Camera and microphone access is required to start the interview. Please allow access in your browser settings and try again.');
-      } else if (err.name === 'NotFoundError') {
-        setPermissionError('No camera or microphone found. Please connect a camera and microphone to start the interview.');
-      } else {
-        setPermissionError(`Unable to access camera/microphone: ${err.message}. Please check your device settings.`);
+      // On mobile, try audio-only if video fails
+      try {
+        const audioOnlyStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        streamRef.current = audioOnlyStream;
+        setCameraOn(false);
+        toast('Camera not available — continuing with audio only', { icon: '🎤' });
+      } catch (audioErr) {
+        setPermissionDenied(true);
+        if (err.name === 'NotAllowedError') {
+          setPermissionError('Camera and microphone access is required to start the interview. Please allow access in your browser settings and try again.');
+        } else if (err.name === 'NotFoundError') {
+          setPermissionError('No camera or microphone found. Please connect a camera and microphone to start the interview.');
+        } else {
+          setPermissionError(`Unable to access camera/microphone: ${err.message}. Please check your device settings.`);
+        }
+        return;
       }
-      return;
     }
 
     setLoading(true);
