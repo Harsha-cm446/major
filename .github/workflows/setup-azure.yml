@@ -137,8 +137,8 @@ jobs:
               || { echo "⚠️ Attempt $ATTEMPT failed, waiting 30s..."; sleep 30; }
           done
 
-      # ── 6. Output URLs ───────────────────────
-      - name: Get Application URLs
+      # ── 6. Output URLs & Auto-configure ──────
+      - name: Get Application URLs and Configure
         run: |
           echo "=== DEPLOYMENT URLS ==="
           BACKEND_FQDN=$(az containerapp show --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query "properties.configuration.ingress.fqdn" -o tsv)
@@ -146,8 +146,33 @@ jobs:
           
           echo "Backend URL:  https://$BACKEND_FQDN"
           echo "Frontend URL: https://$FRONTEND_FQDN"
+          
+          # Auto-update backend with correct FRONTEND_URL
           echo ""
+          echo "🔄 Updating backend FRONTEND_URL..."
+          az containerapp update \
+            --name ${{ env.BACKEND_APP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --set-env-vars \
+              FRONTEND_URL="https://$FRONTEND_FQDN" \
+              PUBLIC_URL="https://$FRONTEND_FQDN"
+          echo "✅ Backend FRONTEND_URL updated!"
+          
+          echo ""
+          echo "========================================="
           echo "⚠️  IMPORTANT NEXT STEPS:"
-          echo "1. Add BACKEND_FQDN as a GitHub secret with value: $BACKEND_FQDN"
-          echo "2. Update backend FRONTEND_URL env var:"
-          echo "   az containerapp update --name ${{ env.BACKEND_APP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --set-env-vars FRONTEND_URL=https://$FRONTEND_FQDN PUBLIC_URL=https://$FRONTEND_FQDN"
+          echo "========================================="
+          echo "1. Add BACKEND_FQDN as a GitHub secret:"
+          echo "   Name:  BACKEND_FQDN"
+          echo "   Value: $BACKEND_FQDN"
+          echo ""
+          echo "2. Add SMTP secrets (for email sending):"
+          echo "   SMTP_HOST      = smtp.gmail.com"
+          echo "   SMTP_PORT      = 587"
+          echo "   SMTP_USER      = your-email@gmail.com"
+          echo "   SMTP_PASSWORD  = your-16-char-app-password (no spaces)"
+          echo "   EMAIL_FROM     = your-email@gmail.com"
+          echo ""
+          echo "3. Run 'Deploy Backend' workflow manually"
+          echo "4. Run 'Deploy Frontend' workflow manually"
+          echo "========================================="

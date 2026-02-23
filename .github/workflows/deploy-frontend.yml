@@ -59,4 +59,7 @@ jobs:
           az containerapp update \
             --name ${{ env.FRONTEND_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.ACR_NAME }}.azurecr.io/ai-interview-frontend:${{ github.sha }}
+            --image ${{ env.ACR_NAME }}.azurecr.io/ai-interview-frontend:${{ github.sha }} \
+            --set-env-vars \
+              VITE_API_URL="https://${{ secrets.BACKEND_FQDN }}/api" \
+              VITE_WS_URL="wss://${{ secrets.BACKEND_FQDN }}"
