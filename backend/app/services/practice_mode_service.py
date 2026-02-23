@@ -226,6 +226,7 @@ class PracticeModeService:
         if video_frame is not None:
             try:
                 visual = multimodal_engine.analyze_face(video_frame)
+                print(f"[PRACTICE] analyze_face => face_detected={visual.get('face_detected')} eye_contact_score={visual.get('eye_contact_score')}")
 
                 # YOLO / Haar person count
                 person_count = multimodal_engine.detect_persons(video_frame)
@@ -269,9 +270,12 @@ class PracticeModeService:
 
                 # Feed the raw gaze score into the FSM (BEFORE EMA smoothing)
                 raw_attention = current_metrics["attention"]
+                print(f"[PRACTICE] Feeding FSM: raw_attention={raw_attention}")
                 gaze_state_output = gaze_fsm.update(raw_attention)
+                print(f"[PRACTICE] FSM output: state={gaze_state_output.get('state')} warning={gaze_state_output.get('show_warning')}")
 
-            except Exception:
+            except Exception as exc:
+                print(f"[PRACTICE] Exception in video processing: {exc}")
                 # On error, check staleness to keep FSM responsive
                 gaze_state_output = gaze_fsm.check_staleness()
         else:

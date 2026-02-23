@@ -86,6 +86,16 @@ export default function CandidateJoin() {
   const SILENCE_TIMEOUT = 3500;
   const [speechSupported, setSpeechSupported] = useState(true);
   const [manualAnswer, setManualAnswer] = useState('');
+  const [isMobileDevice, setIsMobileDevice] = useState(false);
+  const [micDisconnected, setMicDisconnected] = useState(false);
+  const micCheckRef = useRef(null);
+
+  // ── Detect mobile device on mount ───────────────────
+  useEffect(() => {
+    const mobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+      || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent));
+    setIsMobileDevice(mobile);
+  }, []);
 
   // ── Load interview info ────────────────────────────
   useEffect(() => {
@@ -196,10 +206,10 @@ export default function CandidateJoin() {
       if (event.error !== 'no-speech' && event.error !== 'aborted') {
         console.error('Speech recognition error:', event.error);
       }
-      // On mobile, 'not-allowed' means mic permission denied
       if (event.error === 'not-allowed') {
         setSpeechSupported(false);
-        toast.error('Microphone access denied for speech recognition. Use the text box instead.');
+        setMicDisconnected(true);
+        toast.error('Microphone access denied. Audio is required for this interview.', { duration: 10000 });
       }
     };
 
@@ -316,6 +326,35 @@ export default function CandidateJoin() {
     }
   }, [currentQuestion?.question_id, phase, speakQuestion, ttsEnabled, startSpeechRecognition]);
 
+  // ── Mic health monitor — detect mic disconnect during interview ──
+  useEffect(() => {
+    if (phase !== 'interview' || !streamRef.current) return;
+    const checkMicHealth = () => {
+      const audioTracks = streamRef.current?.getAudioTracks() || [];
+      if (audioTracks.length === 0 || audioTracks.every(t => t.readyState === 'ended' || t.muted)) {
+        setMicDisconnected(true);
+        toast.error('Microphone disconnected! Audio is required. Please reconnect.', { duration: 10000 });
+      } else {
+        setMicDisconnected(false);
+      }
+    };
+    micCheckRef.current = setInterval(checkMicHealth, 3000);
+    // Also listen to track ended events
+    const audioTracks = streamRef.current?.getAudioTracks() || [];
+    audioTracks.forEach(t => {
+      t.onended = () => {
+        setMicDisconnected(true);
+        toast.error('Microphone disconnected! Interview paused until mic is restored.', { duration: 10000 });
+      };
+      t.onmute = () => {
+        setMicDisconnected(true);
+        toast.error('Microphone muted! Please unmute to continue.', { duration: 8000 });
+      };
+      t.onunmute = () => setMicDisconnected(false);
+    });
+    return () => clearInterval(micCheckRef.current);
+  }, [phase]);
+
   // ── Cleanup ────────────────────────────────────────
   useEffect(() => {
     return () => {
@@ -326,6 +365,7 @@ export default function CandidateJoin() {
       if (recognitionRef.current) recognitionRef.current.stop();
       if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       clearInterval(timeIntervalRef.current);
+      clearInterval(micCheckRef.current);
       wsRef.current?.close();
       Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
     };
@@ -381,7 +421,7 @@ export default function CandidateJoin() {
   useEffect(() => {
     if (phase !== 'interview' || !token) return;
 
-    if (eyeTrackAlert && gazeState === 'WARNING_ACTIVE') {
+    if (eyeTrackAlert) {
       if (!gazeWarningStartRef.current) {
         gazeWarningStartRef.current = Date.now();
         setProctoringStats(prev => ({ ...prev, gazeViolations: prev.gazeViolations + 1 }));
@@ -439,14 +479,27 @@ export default function CandidateJoin() {
     const pollGaze = async () => {
       try {
         const videoFrame = captureVideoFrame();
-        if (!videoFrame) return;
+        if (!videoFrame) {
+          console.log('[GAZE] No video frame captured — camera may be off or video not ready');
+          return;
+        }
+        console.log('[GAZE] Sending frame for analysis...');
         const { data } = await candidateAPI.analyzeFrame(token, videoFrame);
+        console.log('[GAZE] Response:', JSON.stringify(data));
         if (data.gaze) {
-          setGazeState(data.gaze.state || 'ATTENTIVE');
-          setEyeTrackAlert(!!data.gaze.show_warning);
+          const newState = data.gaze.state || 'ATTENTIVE';
+          const showWarn = !!data.gaze.show_warning;
+          console.log(`[GAZE] state=${newState} show_warning=${showWarn} score=${data.gaze.gaze_score} looking%=${data.gaze.looking_pct}`);
+          setGazeState(newState);
+          setEyeTrackAlert(showWarn);
+        }
+        if ((data.person_count ?? 0) > 1) {
+          console.log(`[GAZE] Multi-person detected: ${data.person_count}`);
         }
         setMultiPersonAlert((data.person_count ?? 0) > 1);
-      } catch { /* ignore */ }
+      } catch (err) {
+        console.error('[GAZE] Poll error:', err?.message || err);
+      }
     };
 
     pollGaze();
@@ -597,7 +650,20 @@ export default function CandidateJoin() {
     setPermissionDenied(false);
     setPermissionError('');
 
-    // Request camera + mic permissions first (mobile-friendly constraints)
+    // ── BLOCK MOBILE DEVICES — screen share not supported ──
+    const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+      || (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent));
+    if (isMobile) {
+      setPermissionDenied(true);
+      setPermissionError(
+        'This proctored interview requires screen sharing, which is not supported on mobile devices. '
+        + 'Please join from a laptop or desktop computer using Chrome, Edge, or Firefox.'
+      );
+      toast.error('Mobile devices are not supported. Please use a laptop or desktop.', { duration: 10000 });
+      return;
+    }
+
+    // ── Request camera + mic (audio is MANDATORY) ──
     try {
       const constraints = {
         video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
@@ -608,37 +674,43 @@ export default function CandidateJoin() {
         },
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      // Verify audio track is actually present and live
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0 || audioTracks[0].readyState === 'ended') {
+        stream.getTracks().forEach(t => t.stop());
+        throw new Error('No active audio track — microphone required');
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        // Explicit play() for mobile browsers — required on iOS/Android
         try { await videoRef.current.play(); } catch (e) { console.log('Video autoplay handled:', e); }
       }
       setCameraOn(true);
+      setMicDisconnected(false);
     } catch (err) {
-      // On mobile, try audio-only if video fails
-      try {
-        const audioOnlyStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        streamRef.current = audioOnlyStream;
-        setCameraOn(false);
-        toast('Camera not available — continuing with audio only', { icon: '🎤' });
-      } catch (audioErr) {
-        setPermissionDenied(true);
-        if (err.name === 'NotAllowedError') {
-          setPermissionError('Camera and microphone access is required to start the interview. Please allow access in your browser settings and try again.');
-        } else if (err.name === 'NotFoundError') {
-          setPermissionError('No camera or microphone found. Please connect a camera and microphone to start the interview.');
-        } else {
-          setPermissionError(`Unable to access camera/microphone: ${err.message}. Please check your device settings.`);
-        }
-        return;
+      // Audio is mandatory — do NOT fall back to audio-only or text
+      setPermissionDenied(true);
+      if (err.name === 'NotAllowedError') {
+        setPermissionError(
+          'Camera and microphone access is REQUIRED. Audio input is mandatory for this interview. '
+          + 'Please allow camera + microphone in your browser settings, then click Start Interview again.'
+        );
+      } else if (err.name === 'NotFoundError') {
+        setPermissionError(
+          'No camera or microphone detected. A working microphone is mandatory. '
+          + 'Please connect a mic and camera, then try again.'
+        );
+      } else {
+        setPermissionError(
+          `Unable to access camera/microphone: ${err.message}. A working microphone is mandatory. `
+          + 'Please check your device settings and try again.'
+        );
       }
+      return;
     }
 
-    // Request screen share before API call (needs user gesture)
-    // Skip on mobile devices — getDisplayMedia is not supported
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    if (!isMobile) {
+    // ── Screen share (mandatory on desktop) ──
+    if (true) {
       try {
         const screenStream = await navigator.mediaDevices.getDisplayMedia({
           video: { displaySurface: 'monitor' },
@@ -858,12 +930,22 @@ export default function CandidateJoin() {
 
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-sm text-blue-800">
                 <p className="font-semibold mb-1">🎤 Voice-Based AI Interview</p>
-                <p>The AI will ask questions aloud using text-to-speech. Answer using your microphone — no typing needed except for coding questions. Enable your camera for the best experience.</p>
+                <p>The AI will ask questions aloud using text-to-speech. Answer using your microphone — no typing allowed. Audio input is mandatory. Enable your camera for the best experience.</p>
               </div>
 
               <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 text-sm text-purple-800">
-                <p><strong>📺 Screen Sharing:</strong> You'll be asked to share your screen when starting. This allows the HR team to monitor the interview in real-time.</p>
+                <p><strong>📺 Screen Sharing:</strong> You will be required to share your entire screen. This allows the HR team to monitor the interview in real-time. Screen sharing is mandatory.</p>
               </div>
+
+              {isMobileDevice && (
+                <div className="bg-red-50 border border-red-300 rounded-lg p-4 text-sm text-red-800 flex items-start gap-3">
+                  <AlertTriangle size={20} className="text-red-500 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-semibold mb-1">Desktop Required</p>
+                    <p>This proctored interview requires screen sharing, which is not available on mobile devices. Please join from a <strong>laptop or desktop computer</strong> using Chrome, Edge, or Firefox.</p>
+                  </div>
+                </div>
+              )}
 
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 text-sm text-yellow-800">
                 <p><strong>Two Rounds:</strong> Technical (70% cutoff to proceed) → HR</p>
@@ -896,11 +978,11 @@ export default function CandidateJoin() {
 
               <button
                 onClick={startInterview}
-                disabled={loading || !candidateName.trim()}
+                disabled={loading || !candidateName.trim() || isMobileDevice}
                 className="w-full gradient-bg text-white py-3 rounded-xl font-semibold flex items-center justify-center space-x-2 hover:opacity-90 transition disabled:opacity-50"
               >
                 {loading ? <Loader2 className="animate-spin" size={20} /> : <Send size={18} />}
-                <span>{loading ? 'Preparing...' : 'Start Interview'}</span>
+                <span>{loading ? 'Preparing...' : isMobileDevice ? 'Desktop Required' : 'Start Interview'}</span>
               </button>
             </div>
           </div>
@@ -1268,34 +1350,26 @@ export default function CandidateJoin() {
                 </div>
                 {/* Voice transcript display */}
                 <div className={`w-full min-h-[80px] px-4 py-3 border rounded-lg text-gray-700 text-base leading-relaxed ${
+                  micDisconnected ? 'border-red-400 bg-red-50/50' :
                   isRecording ? 'border-green-400 bg-green-50/50' : isSpeaking ? 'border-blue-300 bg-blue-50/30' : 'border-gray-200 bg-gray-50'
                 }`}>
                   {answer || (
                     <span className="text-gray-400 italic">
-                      {isSpeaking ? 'AI is speaking... listen to the question' : isRecording ? '🎤 Listening... speak your answer naturally' : speechSupported ? 'Microphone paused' : 'Type your answer below'}
+                      {micDisconnected ? '⚠️ Microphone disconnected — please reconnect to continue' :
+                       isSpeaking ? 'AI is speaking... listen to the question' :
+                       isRecording ? '🎤 Listening... speak your answer naturally' :
+                       'Microphone paused — click Resume to speak'}
                     </span>
                   )}
                 </div>
-                {/* Text input fallback for mobile / unsupported browsers */}
-                {(!speechSupported || !isRecording) && (
-                  <div className="mt-3">
-                    <label className="block text-xs font-medium text-gray-500 mb-1">
-                      {speechSupported ? 'Or type your answer:' : '✏️ Type your answer here:'}
-                    </label>
-                    <textarea
-                      value={manualAnswer}
-                      onChange={(e) => {
-                        setManualAnswer(e.target.value);
-                        setAnswer(e.target.value);
-                        answerRef.current = e.target.value;
-                      }}
-                      rows={3}
-                      placeholder="Type your answer here..."
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 outline-none resize-none text-sm"
-                    />
+                {/* Mic disconnected warning */}
+                {micDisconnected && (
+                  <div className="mt-2 bg-red-50 border border-red-200 rounded-lg p-3 flex items-center space-x-2 text-sm text-red-800">
+                    <AlertTriangle size={16} className="text-red-500 flex-shrink-0" />
+                    <span>Microphone disconnected! Reconnect your mic to continue the interview. Typing is not allowed.</span>
                   </div>
                 )}
-                {isRecording && !isSpeaking && (
+                {isRecording && !isSpeaking && !micDisconnected && (
                   <div className="flex items-center justify-between mt-2">
                     <div className="flex items-center space-x-2 text-green-600 text-sm">
                       <div className="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse"></div>

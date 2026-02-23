@@ -56,6 +56,8 @@ except Exception:
     _yolo_model = None
     YOLO_AVAILABLE = False
 
+print(f"[MULTIMODAL] CV2={CV2_AVAILABLE} DeepFace={DEEPFACE_AVAILABLE} YOLO={YOLO_AVAILABLE}")
+
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -461,7 +463,8 @@ class MultimodalAnalysisEngine:
         5. Also penalise if face itself is off-centre (head turned)
         """
         if not CV2_AVAILABLE or self._face_cascade is None:
-            return 50.0
+            print(f"[GAZE] Skipping gaze — CV2={CV2_AVAILABLE} face_cascade={'loaded' if self._face_cascade else 'None'}")
+            return 15.0  # Below threshold so FSM treats as "away"
 
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -571,8 +574,9 @@ class MultimodalAnalysisEngine:
             })
             return round(gaze_score, 1)
 
-        except Exception:
-            return 50.0
+        except Exception as exc:
+            print(f"[GAZE] Exception in _estimate_gaze: {exc}")
+            return 15.0  # Below threshold so FSM treats as "away"
 
     def detect_persons(self, frame_b64: str) -> int:
         """Count the number of persons visible using YOLOv8.
@@ -619,7 +623,7 @@ class MultimodalAnalysisEngine:
             "emotion_stability": 50.0,
             "face_detected": False,
             "micro_expressions": [],
-            "eye_contact_score": 50.0,
+            "eye_contact_score": 15.0,  # Below gaze_threshold so FSM treats as "away"
         }
 
     # ── Voice Sentiment Analysis ──────────────────────
