@@ -63,6 +63,9 @@ export default function CandidateJoin() {
     gazeViolations: 0, multiPersonAlerts: 0, tabSwitches: 0, totalAwayTime: 0,
   });
   const [tabSwitchAlert, setTabSwitchAlert] = useState(false);
+  const [eyeTrackAlert, setEyeTrackAlert] = useState(false);
+  const [gazeState, setGazeState] = useState('ATTENTIVE');
+  const [multiPersonAlert, setMultiPersonAlert] = useState(false);
   const gazeWarningStartRef = useRef(null);
 
   const videoRef = useRef(null);
@@ -299,9 +302,19 @@ export default function CandidateJoin() {
   // ── Speak question on change ───────────────────────
   useEffect(() => {
     if (currentQuestion?.question && phase === 'interview') {
-      speakQuestion(currentQuestion.question);
+      if (ttsEnabled) {
+        speakQuestion(currentQuestion.question);
+      } else {
+        // TTS disabled — start speech recognition directly
+        autoListenRef.current = true;
+        setTimeout(() => {
+          if (autoListenRef.current && !isSubmittingRef.current) {
+            startSpeechRecognition();
+          }
+        }, 400);
+      }
     }
-  }, [currentQuestion?.question_id, phase, speakQuestion]);
+  }, [currentQuestion?.question_id, phase, speakQuestion, ttsEnabled, startSpeechRecognition]);
 
   // ── Cleanup ────────────────────────────────────────
   useEffect(() => {
@@ -363,6 +376,83 @@ export default function CandidateJoin() {
       window.removeEventListener('focus', handleWindowFocus);
     };
   }, [phase, token]);
+
+  // ── Log gaze violations to backend ──
+  useEffect(() => {
+    if (phase !== 'interview' || !token) return;
+
+    if (eyeTrackAlert && gazeState === 'WARNING_ACTIVE') {
+      if (!gazeWarningStartRef.current) {
+        gazeWarningStartRef.current = Date.now();
+        setProctoringStats(prev => ({ ...prev, gazeViolations: prev.gazeViolations + 1 }));
+      }
+    } else if (gazeWarningStartRef.current) {
+      const duration = (Date.now() - gazeWarningStartRef.current) / 1000;
+      gazeWarningStartRef.current = null;
+      setProctoringStats(prev => ({ ...prev, totalAwayTime: prev.totalAwayTime + duration }));
+      candidateAPI.logViolation(token, {
+        violation_type: 'gaze_away',
+        duration_sec: Math.round(duration * 10) / 10,
+        details: `Looked away for ${Math.round(duration)}s`,
+      }).catch(() => {});
+    }
+  }, [eyeTrackAlert, gazeState, phase, token]);
+
+  // ── Log multi-person alerts to backend ──
+  useEffect(() => {
+    if (phase !== 'interview' || !token || !multiPersonAlert) return;
+    setProctoringStats(prev => ({ ...prev, multiPersonAlerts: prev.multiPersonAlerts + 1 }));
+    candidateAPI.logViolation(token, {
+      violation_type: 'multi_person',
+      duration_sec: 0,
+      details: 'Multiple persons detected in camera',
+    }).catch(() => {});
+  }, [multiPersonAlert, phase, token]);
+
+  // ── Video frame capture helper ──
+  const captureVideoFrame = useCallback(() => {
+    if (!videoRef.current || !cameraOn) return null;
+    try {
+      const video = videoRef.current;
+      if (video.videoWidth === 0 || video.videoHeight === 0) return null;
+      const canvas = document.createElement('canvas');
+      canvas.width = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, 320, 240);
+      return canvas.toDataURL('image/jpeg', 0.6).split(',')[1];
+    } catch {
+      return null;
+    }
+  }, [cameraOn]);
+
+  // ── Gaze monitoring polling (every 2s during interview) ──
+  useEffect(() => {
+    if (phase !== 'interview' || !token || !cameraOn) {
+      if (phase !== 'interview') {
+        setEyeTrackAlert(false);
+        setGazeState('ATTENTIVE');
+      }
+      return;
+    }
+
+    const pollGaze = async () => {
+      try {
+        const videoFrame = captureVideoFrame();
+        if (!videoFrame) return;
+        const { data } = await candidateAPI.analyzeFrame(token, videoFrame);
+        if (data.gaze) {
+          setGazeState(data.gaze.state || 'ATTENTIVE');
+          setEyeTrackAlert(!!data.gaze.show_warning);
+        }
+        setMultiPersonAlert((data.person_count ?? 0) > 1);
+      } catch { /* ignore */ }
+    };
+
+    pollGaze();
+    const gazeInterval = setInterval(pollGaze, 2000);
+    return () => clearInterval(gazeInterval);
+  }, [phase, token, cameraOn, captureVideoFrame]);
 
   // ── WebSocket for live streaming to HR ─────────────
   useEffect(() => {
@@ -550,16 +640,56 @@ export default function CandidateJoin() {
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     if (!isMobile) {
       try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { displaySurface: 'monitor' },
+          audio: false,
+        });
+        // Validate: prefer monitor (full screen) share
+        const videoTrack = screenStream.getVideoTracks()[0];
+        const trackSettings = videoTrack?.getSettings?.() || {};
+        if (trackSettings.displaySurface && trackSettings.displaySurface !== 'monitor') {
+          screenStream.getTracks().forEach(t => t.stop());
+          toast.error('Please share your entire screen (not a window or tab). Try again.');
+          setPermissionDenied(true);
+          setPermissionError('You must share your entire screen to proceed. Click "Start Interview" again and select the full screen option.');
+          return;
+        }
         screenStreamRef.current = screenStream;
         setScreenSharing(true);
-        screenStream.getVideoTracks()[0].onended = () => {
+        videoTrack.onended = () => {
           screenStreamRef.current = null;
           setScreenSharing(false);
+          toast.error('Screen sharing stopped! Please re-share your screen.', { duration: 8000 });
+          // Re-prompt screen share
+          navigator.mediaDevices.getDisplayMedia({
+            video: { displaySurface: 'monitor' },
+            audio: false,
+          }).then(newStream => {
+            screenStreamRef.current = newStream;
+            setScreenSharing(true);
+            newStream.getVideoTracks()[0].onended = () => {
+              screenStreamRef.current = null;
+              setScreenSharing(false);
+              toast.error('Screen sharing stopped again! The HR team has been notified.', { duration: 8000 });
+            };
+            // Notify HR of updated stream
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({
+                type: 'stream_ready',
+                has_camera: cameraOn,
+                has_screen: true,
+              }));
+            }
+          }).catch(() => {
+            toast.error('Screen sharing is required for this interview.', { duration: 8000 });
+          });
         };
-      } catch {
-        // Screen share is optional — candidate can decline
-        console.log('Screen share not captured');
+      } catch (err) {
+        // Screen share is mandatory — block interview if declined
+        toast.error('Screen sharing is required to proceed with the interview.');
+        setPermissionDenied(true);
+        setPermissionError('Screen sharing is required. Click "Start Interview" again and share your entire screen to proceed.');
+        return;
       }
     }
 
@@ -936,13 +1066,34 @@ export default function CandidateJoin() {
                   </div>
                 </div>
               )}
+              {eyeTrackAlert && (
+                <div className="absolute bottom-3 left-3 right-3">
+                  <div className="bg-red-500/90 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-2 animate-pulse">
+                    <Eye size={14} />
+                    <span>Look at the camera! Gaze violation detected.</span>
+                  </div>
+                </div>
+              )}
+              {multiPersonAlert && (
+                <div className="absolute bottom-3 left-3 right-3">
+                  <div className="bg-orange-500/90 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-2 animate-pulse">
+                    <UserX size={14} />
+                    <span>Multiple persons detected! Only you should be visible.</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Screen share status */}
-            {screenSharing && (
+            {screenSharing ? (
               <div className="mt-2 flex items-center space-x-2 text-xs text-green-700 bg-green-50 rounded-lg px-3 py-2">
                 <Monitor size={14} />
                 <span>Screen sharing active</span>
+              </div>
+            ) : (
+              <div className="mt-2 flex items-center space-x-2 text-xs text-red-700 bg-red-50 rounded-lg px-3 py-2">
+                <Monitor size={14} />
+                <span>Screen sharing not active — HR may flag this</span>
               </div>
             )}
 

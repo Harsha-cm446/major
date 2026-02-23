@@ -25,6 +25,7 @@ from app.core.database import get_database
 from app.core.config import settings
 from app.services.ai_service import ai_service
 from app.services.report_service import generate_pdf_report
+from app.services.practice_mode_service import practice_mode_service
 
 router = APIRouter(prefix="/api/candidate-interview", tags=["Candidate AI Interview"])
 
@@ -811,4 +812,53 @@ async def get_candidate_proctoring_summary(token: str):
         "total_violations": total_violations,
         "integrity_score": round(integrity_score, 1),
         "violation_log": proctoring.get("violation_log", [])[-20:],
+    }
+
+
+# ── Proctoring: Live Gaze & Person Detection ─────────
+
+class CandidateGazeAnalysisRequest(BaseModel):
+    video_frame: Optional[str] = None  # base64-encoded JPEG frame
+
+
+@router.post("/{token}/proctoring/analyze")
+async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest):
+    """
+    Analyze a video frame for gaze direction and multi-person detection.
+    Token-based (no auth), used by CandidateJoin for live proctoring.
+    Reuses the practice_mode_service gaze FSM.
+    """
+    db = get_database()
+    candidate = await _get_candidate_by_token(token)
+    ai_session = await db.candidate_ai_sessions.find_one({"candidate_token": token})
+    if not ai_session:
+        raise HTTPException(status_code=404, detail="Interview not started")
+
+    session_id = str(ai_session["_id"])
+    practice_id = f"candidate_{session_id}"
+
+    # Ensure a practice session tracker exists for gaze FSM
+    if practice_id not in practice_mode_service._active_sessions:
+        practice_mode_service._active_sessions[practice_id] = {
+            "user_id": token,
+            "status": "active",
+            "started_at": datetime.utcnow(),
+            "metrics_history": [],
+            "live_metrics": {},
+            "current_question_idx": 0,
+            "answers": [],
+            "questions": [],
+            "topic": "candidate_interview",
+            "topic_name": "Candidate Interview",
+        }
+
+    result = practice_mode_service.update_live_metrics(
+        practice_id,
+        partial_text="",
+        video_frame=body.video_frame,
+    )
+
+    return {
+        "gaze": result.get("gaze"),
+        "person_count": result.get("person_count", 0),
     }

@@ -150,8 +150,13 @@ export default function LiveInterview() {
   }, []);
 
   const handleWebRTCOffer = useCallback(async (data) => {
-    // Close previous connection
-    closeStream();
+    // Close previous peer connection only — do NOT reset watchingCandidate
+    if (peerConnectionRef.current) {
+      peerConnectionRef.current.close();
+      peerConnectionRef.current = null;
+    }
+    setCameraStream(null);
+    setScreenStream(null);
 
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConnectionRef.current = pc;
@@ -200,7 +205,13 @@ export default function LiveInterview() {
 
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-        closeStream();
+        // Only close the PC, don't reset watching state — allow re-request
+        if (peerConnectionRef.current === pc) {
+          peerConnectionRef.current.close();
+          peerConnectionRef.current = null;
+          setCameraStream(null);
+          setScreenStream(null);
+        }
       }
     };
 
@@ -232,10 +243,21 @@ export default function LiveInterview() {
       return;
     }
     setWatchingCandidate(candidateToken);
+    setCameraStream(null);
+    setScreenStream(null);
     wsRef.current.send(JSON.stringify({
       type: 'request_stream',
       target: candidateToken,
     }));
+    // Auto-retry after 3s if we don't get streams
+    setTimeout(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN && !peerConnectionRef.current) {
+        wsRef.current.send(JSON.stringify({
+          type: 'request_stream',
+          target: candidateToken,
+        }));
+      }
+    }, 3000);
   }, []);
 
   const closeStream = useCallback(() => {

@@ -125,6 +125,7 @@ export const candidateAPI = {
   // Proctoring
   logViolation: (token, data) => api.post(`/candidate-interview/${token}/proctoring/violation`, data),
   getProctoringSummary: (token) => api.get(`/candidate-interview/${token}/proctoring/summary`),
+  analyzeFrame: (token, videoFrame) => api.post(`/candidate-interview/${token}/proctoring/analyze`, { video_frame: videoFrame || null }),
 };
 
 export default api;
