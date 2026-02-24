@@ -87,12 +87,30 @@ async def _get_session_for_candidate(candidate: dict):
 @router.get("/{token}/info")
 async def get_interview_info(token: str):
     """Return session info so the candidate sees job role, company, etc."""
+    db = get_database()
     candidate = await _get_candidate_by_token(token)
     session = await _get_session_for_candidate(candidate)
 
-    ai_session = await get_database().candidate_ai_sessions.find_one(
+    ai_session = await db.candidate_ai_sessions.find_one(
         {"candidate_token": token}
     )
+
+    ai_session_status = ai_session.get("status") if ai_session else None
+
+    # Auto-complete if in_progress but time has expired (candidate closed browser)
+    if ai_session and ai_session_status == "in_progress":
+        started_at = ai_session.get("started_at", ai_session.get("created_at"))
+        duration = ai_session.get("duration_minutes", session.get("duration_minutes", 30))
+        proc_total = ai_session.get("processing_time_total", 0.0)
+        time_status = ai_service.check_time_status(started_at, duration, proc_total)
+        if time_status and time_status.get("is_expired"):
+            try:
+                await _complete_candidate_session(
+                    db, ai_session, candidate, ai_session.get("responses", [])
+                )
+                ai_session_status = "completed"
+            except Exception:
+                pass
 
     return {
         "job_role": session.get("job_role", ""),
@@ -104,7 +122,7 @@ async def get_interview_info(token: str):
         "candidate_email": candidate.get("email", ""),
         "candidate_status": candidate.get("status", "invited"),
         "ai_session_id": str(ai_session["_id"]) if ai_session else None,
-        "ai_session_status": ai_session.get("status") if ai_session else None,
+        "ai_session_status": ai_session_status,
         "interview_session_id": candidate.get("interview_session_id", ""),
     }
 
@@ -586,7 +604,20 @@ async def check_candidate_time(token: str):
     started_at = ai_session.get("started_at", ai_session["created_at"])
     duration = ai_session.get("duration_minutes", 30)
     proc_total = ai_session.get("processing_time_total", 0.0)
-    return ai_service.check_time_status(started_at, duration, proc_total)
+    time_status = ai_service.check_time_status(started_at, duration, proc_total)
+
+    # Auto-complete if time expired and still in_progress
+    if ai_session.get("status") == "in_progress" and time_status.get("is_expired"):
+        try:
+            candidate = await _get_candidate_by_token(token)
+            await _complete_candidate_session(
+                db, ai_session, candidate, ai_session.get("responses", [])
+            )
+            time_status["auto_completed"] = True
+        except Exception:
+            pass
+
+    return time_status
 
 
 # ── POST /{token}/end ─────────────────────────────────
@@ -684,10 +715,23 @@ async def get_session_progress(session_id: str):
         proc_total = ai_sess.get("processing_time_total", 0.0)
         time_status = ai_service.check_time_status(started_at, duration, proc_total) if started_at else None
 
+        # ── Auto-complete expired in_progress sessions ──
+        # If a candidate started the interview and closed the browser, the status
+        # remains "in_progress" forever. Detect this by checking if time has expired
+        # and auto-complete the session.
+        session_status = ai_sess.get("status", "unknown")
+        if session_status == "in_progress" and time_status and time_status.get("is_expired"):
+            try:
+                candidate = await db.candidates.find_one({"unique_token": ai_sess.get("candidate_token")})
+                await _complete_candidate_session(db, ai_sess, candidate or {}, responses)
+                session_status = "completed"
+            except Exception as e:
+                print(f"Auto-complete failed for {ai_sess.get('candidate_email')}: {e}")
+
         results.append({
             "candidate_name": ai_sess.get("candidate_name", "Unknown"),
             "candidate_email": ai_sess.get("candidate_email", ""),
-            "status": ai_sess.get("status", "unknown"),
+            "status": session_status,
             "current_round": ai_sess.get("current_round", "Technical"),
             "answered": answered,
             "total_questions": answered,
@@ -706,6 +750,67 @@ async def get_session_progress(session_id: str):
         })
 
     return results
+
+
+# ── GET /session/{session_id}/duplicate-questions ─────
+
+@router.get("/session/{session_id}/duplicate-questions")
+async def get_duplicate_questions(session_id: str):
+    """Find questions that were asked to multiple candidates in the same session."""
+    db = get_database()
+    cursor = db.candidate_ai_sessions.find({"interview_session_id": session_id})
+
+    # Collect: question_text -> list of {candidate_name, candidate_email, round, difficulty}
+    question_map = {}  # question_text -> [candidate info]
+    async for ai_sess in cursor:
+        candidate_name = ai_sess.get("candidate_name", "Unknown")
+        candidate_email = ai_sess.get("candidate_email", "")
+        for q in ai_sess.get("questions", []):
+            q_text = q.get("question", "").strip()
+            if not q_text:
+                continue
+            q_lower = q_text.lower()
+            # Find or create entry using case-insensitive matching
+            matched_key = None
+            for existing_key in question_map:
+                if existing_key.lower() == q_lower:
+                    matched_key = existing_key
+                    break
+            if matched_key is None:
+                matched_key = q_text
+                question_map[matched_key] = []
+            question_map[matched_key].append({
+                "candidate_name": candidate_name,
+                "candidate_email": candidate_email,
+                "round": q.get("round", "Technical"),
+                "difficulty": q.get("difficulty", "medium"),
+            })
+
+    # Filter to only questions asked to 2+ candidates
+    duplicates = []
+    for question_text, candidates_list in question_map.items():
+        if len(candidates_list) >= 2:
+            # Deduplicate by email (same candidate shouldn't appear twice for same question)
+            seen_emails = set()
+            unique_candidates = []
+            for c in candidates_list:
+                if c["candidate_email"] not in seen_emails:
+                    seen_emails.add(c["candidate_email"])
+                    unique_candidates.append(c)
+            if len(unique_candidates) >= 2:
+                duplicates.append({
+                    "question": question_text,
+                    "candidate_count": len(unique_candidates),
+                    "candidates": unique_candidates,
+                })
+
+    # Sort by number of candidates (most duplicated first)
+    duplicates.sort(key=lambda x: x["candidate_count"], reverse=True)
+
+    return {
+        "total_duplicate_questions": len(duplicates),
+        "duplicates": duplicates,
+    }
 
 
 # ── Helpers ───────────────────────────────────────────

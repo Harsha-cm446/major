@@ -119,6 +119,7 @@ export const candidateAPI = {
   getReport: (token) => api.get(`/candidate-interview/${token}/report`),
   getReportPDF: (token) => api.get(`/candidate-interview/${token}/report/pdf`, { responseType: 'blob' }),
   getSessionProgress: (sessionId) => api.get(`/candidate-interview/session/${sessionId}/progress`),
+  getDuplicateQuestions: (sessionId) => api.get(`/candidate-interview/session/${sessionId}/duplicate-questions`),
   getPublicUrl: () => api.get('/candidate-interview/public-url'),
   checkTime: (token) => api.get(`/candidate-interview/${token}/time`),
   endInterview: (token) => api.post(`/candidate-interview/${token}/end`),

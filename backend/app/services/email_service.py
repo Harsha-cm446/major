@@ -100,6 +100,9 @@ async def _send_single_invite(to_email: str, unique_token: str, session: dict, c
     scheduled = session.get("scheduled_time")
     date_str = scheduled.strftime("%B %d, %Y") if scheduled else "TBD"
     time_str = scheduled.strftime("%I:%M %p") if scheduled else "TBD"
+    # Strip leading zero from hour (e.g. "02:30 PM" -> "2:30 PM")
+    if time_str.startswith("0"):
+        time_str = time_str[1:]
     job_role = session.get("job_role", "Position")
 
     subject = f"Interview Invitation – {company_name}"

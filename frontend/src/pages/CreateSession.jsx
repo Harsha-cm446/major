@@ -26,7 +26,9 @@ export default function CreateSession() {
       const res = await interviewAPI.createSession({
         ...form,
         duration_minutes: parseInt(form.duration_minutes),
-        scheduled_time: new Date(form.scheduled_time).toISOString(),
+        // Send the datetime-local value directly (without UTC conversion)
+        // so the stored time matches what the HR intended for the email
+        scheduled_time: form.scheduled_time,
       });
       toast.success('Session created!');
       navigate(`/hr/session/${res.data.id}`);

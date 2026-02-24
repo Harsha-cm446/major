@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import {
   Loader2, Users, Eye, ArrowLeft, RefreshCw, BarChart3,
   CheckCircle, Clock, AlertTriangle, FileText, XCircle, Timer,
-  Video, VideoOff, Monitor, X, Shield, UserX, MonitorX,
+  Video, VideoOff, Monitor, X, Shield, UserX, MonitorX, Copy,
 } from 'lucide-react';
 
 const ICE_SERVERS = [
@@ -41,6 +41,9 @@ export default function LiveInterview() {
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   const [candidateReport, setCandidateReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState('candidates'); // 'candidates' | 'duplicates'
+  const [duplicateQuestions, setDuplicateQuestions] = useState(null);
+  const [duplicatesLoading, setDuplicatesLoading] = useState(false);
 
   // ── Live Feed State ─────────────────────────────────
   const [watchingCandidate, setWatchingCandidate] = useState(null); // token of candidate being watched
@@ -70,9 +73,22 @@ export default function LiveInterview() {
     }
   };
 
+  const loadDuplicates = async () => {
+    setDuplicatesLoading(true);
+    try {
+      const res = await candidateAPI.getDuplicateQuestions(sessionId);
+      setDuplicateQuestions(res.data);
+    } catch (err) {
+      toast.error('Failed to load duplicate questions');
+    } finally {
+      setDuplicatesLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadData();
-    const interval = setInterval(() => loadData(), 10000);
+    loadDuplicates();
+    const interval = setInterval(() => { loadData(); loadDuplicates(); }, 10000);
     return () => clearInterval(interval);
   }, [sessionId]);
 
@@ -725,6 +741,112 @@ export default function LiveInterview() {
         ))}
       </div>
 
+      {/* Tabs: Candidates | Duplicate Questions */}
+      <div className="flex items-center space-x-1 mb-6 bg-gray-100 rounded-xl p-1 w-fit">
+        <button
+          onClick={() => setActiveTab('candidates')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+            activeTab === 'candidates'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <span className="flex items-center gap-2"><Users size={15} /> Candidates ({candidates.length})</span>
+        </button>
+        <button
+          onClick={() => setActiveTab('duplicates')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+            activeTab === 'duplicates'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <Copy size={15} />
+            Duplicate Questions
+            {duplicateQuestions && duplicateQuestions.total_duplicate_questions > 0 && (
+              <span className="ml-1 bg-red-100 text-red-700 text-xs px-2 py-0.5 rounded-full font-bold">
+                {duplicateQuestions.total_duplicate_questions}
+              </span>
+            )}
+          </span>
+        </button>
+      </div>
+
+      {/* ── Duplicate Questions Tab ─────────────── */}
+      {activeTab === 'duplicates' && (
+        <div className="space-y-4">
+          {duplicatesLoading ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
+              <Loader2 className="animate-spin text-primary-500 mx-auto mb-3" size={32} />
+              <p className="text-gray-400 text-sm">Loading duplicate questions...</p>
+            </div>
+          ) : !duplicateQuestions || duplicateQuestions.total_duplicate_questions === 0 ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
+              <CheckCircle size={48} className="mx-auto text-green-300 mb-4" />
+              <h2 className="text-lg font-semibold text-gray-700 mb-2">No Duplicate Questions</h2>
+              <p className="text-gray-400 text-sm">All candidates received unique questions in this session.</p>
+            </div>
+          ) : (
+            <>
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start space-x-3">
+                <AlertTriangle size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                <div className="text-sm text-amber-800">
+                  <p className="font-semibold mb-1">{duplicateQuestions.total_duplicate_questions} duplicate question(s) detected</p>
+                  <p>The following questions were asked to multiple candidates in this session. This may affect fairness if candidates can share answers.</p>
+                </div>
+              </div>
+              {duplicateQuestions.duplicates.map((dup, idx) => (
+                <div key={idx} className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+                  <div className="flex items-start justify-between mb-4">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="bg-red-100 text-red-700 text-xs px-2.5 py-1 rounded-full font-semibold">
+                          Asked to {dup.candidate_count} candidates
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          dup.candidates[0]?.round === 'HR' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                        }`}>
+                          {dup.candidates[0]?.round || 'Technical'}
+                        </span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          dup.candidates[0]?.difficulty === 'hard' ? 'bg-red-100 text-red-700'
+                            : dup.candidates[0]?.difficulty === 'easy' ? 'bg-green-100 text-green-700'
+                            : 'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {dup.candidates[0]?.difficulty || 'medium'}
+                        </span>
+                      </div>
+                      <p className="text-gray-900 font-medium text-sm leading-relaxed">
+                        "{dup.question}"
+                      </p>
+                    </div>
+                  </div>
+                  <div className="border-t border-gray-100 pt-3">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Candidates who received this question:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {dup.candidates.map((c, cIdx) => (
+                        <div key={cIdx} className="flex items-center gap-2 bg-gray-50 rounded-lg px-3 py-2">
+                          <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 text-xs font-bold">
+                            {c.candidate_name?.[0]?.toUpperCase() || '?'}
+                          </div>
+                          <div>
+                            <span className="text-sm font-medium text-gray-800">{c.candidate_name}</span>
+                            <span className="text-xs text-gray-400 ml-2">{c.candidate_email}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ── Candidates Tab ─────────────────────── */}
+      {activeTab === 'candidates' && (<>
       {/* Candidate list */}
       {candidates.length === 0 ? (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
@@ -910,6 +1032,7 @@ export default function LiveInterview() {
           ))}
         </div>
       )}
+      </>)}
     </div>
   );
 }
