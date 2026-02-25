@@ -55,8 +55,6 @@ try:
 except ImportError:
     ST_AVAILABLE = False
 
-import google.genai as genai
-from google.genai import types as genai_types
 from app.core.config import settings
 
 
@@ -442,15 +440,25 @@ Return ONLY valid JSON:
         # Determine question type based on round and progression
         progress = question_number / max(total_planned, 1)
 
-        # ── Probabilistic coding question insertion ──
-        # Only in Technical round, after the first conceptual questions,
+        # ── Coding question insertion logic ──
+        # Only in Technical round, after initial conceptual questions,
         # with decreasing probability as more coding Qs are asked.
         # Max 2 coding questions per session.
+        # GUARANTEE: at least one coding question by mid-session (progress >= 0.5).
         should_code = False
-        if round_type == "Technical" and progress >= 0.2 and coding_count < 2:
-            # Base 25% chance, reduced by 15% for each coding Q already asked
-            coding_prob = max(0.0, 0.25 - (coding_count * 0.15))
-            should_code = _rand.random() < coding_prob
+        if round_type == "Technical" and coding_count < 2:
+            if coding_count == 0 and progress >= 0.5:
+                # Guarantee: force the first coding question by mid-session
+                should_code = True
+                print(f"[QuestionGen] GUARANTEED coding question: progress={progress:.2f}, coding_count={coding_count}")
+            elif progress >= 0.2:
+                # Probabilistic: base 30% chance, reduced by 15% per existing coding Q
+                coding_prob = max(0.0, 0.30 - (coding_count * 0.15))
+                should_code = _rand.random() < coding_prob
+
+        print(f"[QuestionGen] smart_route: q_num={question_number}, total={total_planned}, "
+              f"progress={progress:.2f}, round={round_type}, coding_count={coding_count}, "
+              f"should_code={should_code}")
 
         if round_type == "Technical":
             if should_code:
