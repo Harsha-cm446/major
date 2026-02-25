@@ -2,7 +2,7 @@
 AI Interview Platform — Optimized Main Application
 ────────────────────────────────────────────────────
   • AI models warm-loaded at startup for < 3s interview start
-  • Google Gemini API (gemini-2.5-flash) for LLM inference
+  • Groq API (llama-3.3-70b-versatile) for LLM inference
   • CORS allows all origins for public access
   • Bind to 0.0.0.0 for network-wide access
 """
@@ -93,7 +93,7 @@ async def health():
     return {
         "status": "healthy",
         "ai_warmed": ai_service._warmed_up,
-        "gemini_model": settings.GEMINI_MODEL,
+        "llm_model": settings.GROQ_MODEL,
     }
 
 

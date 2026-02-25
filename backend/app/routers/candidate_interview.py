@@ -216,12 +216,14 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
     avoid_questions = other_candidate_questions + past_candidate_questions
 
     # Generate first question
+    # Use token as session_id for tracking (unique per candidate, available before DB insert)
     q_data = await ai_service.generate_question(
         job_role, difficulty, avoid_questions,
         round_type="Technical",
         job_description=job_description,
         experience_level=experience_level,
         jd_analysis=jd_analysis,
+        session_id=token,
     )
     question_id = str(uuid.uuid4())
 
@@ -419,6 +421,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
             last_score=last_score,
             jd_analysis=ai_session.get("jd_analysis"),
             coding_count=coding_count,
+            session_id=str(ai_session["_id"]),
         )
 
         try:
@@ -528,6 +531,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
                         last_score=evaluation.get("overall_score", 50),
                         jd_analysis=ai_session.get("jd_analysis"),
                         coding_count=coding_count,
+                        session_id=str(ai_session["_id"]),
                     )
 
     # ── Generate next question (if not already done in parallel or via code follow-up) ──
@@ -550,6 +554,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
             last_score=last_score,
             jd_analysis=ai_session.get("jd_analysis"),
             coding_count=coding_count,
+            session_id=str(ai_session["_id"]),
         )
     else:
         next_difficulty = ai_service.determine_next_difficulty(

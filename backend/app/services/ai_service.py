@@ -3,7 +3,7 @@ AI Interview Engine — Optimized Performance Architecture
 ─────────────────────────────────────────────────────────
 Optimizations:
   • Model warm-loading at startup (not per-request)
-  • Google Gemini API (gemini-2.5-flash) for fast LLM inference
+  • Groq API (llama-3.3-70b-versatile) for fast LLM inference
   • Two-phase evaluation: instant score (<2s) + background deep analysis
   • Parallel evaluation with asyncio.gather()
   • Reduced LLM calls: local scoring for similarity/keywords/communication
@@ -114,31 +114,31 @@ class AIService:
             from app.services.model_registry import model_registry
             model_registry.warm_up()
 
-            if model_registry.gemini_client:
-                print(f"  ✅ Gemini configured (model: {settings.GEMINI_MODEL})")
+            if model_registry.groq_client:
+                print(f"  ✅ Groq configured (model: {settings.GROQ_MODEL})")
             else:
-                print("  ⚠️ GEMINI_API_KEY not set — LLM calls will return empty results")
+                print("  ⚠️ GROQ_API_KEY not set — LLM calls will return empty results")
 
             self._warmed_up = True
             print("✅ AI Engine ready — models will load on first use")
 
     async def shutdown(self):
         """Cleanup on app shutdown."""
-        pass  # Gemini SDK doesn't require explicit cleanup
+        pass  # Groq SDK doesn't require explicit cleanup
 
     @property
     def embedding_model(self) -> Any:
         from app.services.model_registry import model_registry
         return model_registry.embedding_model
 
-    # ── Gemini helpers ────────────────────────────────
+    # ── LLM helpers ─────────────────────────────────
 
-    async def _gemini_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
-        """Call Google Gemini API with automatic model fallback on quota errors.
+    async def _llm_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
+        """Call Groq API with automatic model fallback on quota errors.
         fast=True uses lower token limit."""
         from app.services.model_registry import model_registry
         full_system = MASTER_SYSTEM_PROMPT + "\n\n" + system
-        return await model_registry.gemini_generate(prompt, full_system, fast=fast)
+        return await model_registry.llm_generate(prompt, full_system, fast=fast)
 
     def _parse_json_from_response(self, text: str) -> dict:
         """Extract JSON from LLM response text."""
@@ -171,7 +171,7 @@ Return ONLY a JSON object:
   "hr_topics": ["topic1", "topic2"]
 }}"""
 
-        response = await self._gemini_generate(prompt, "You are a JD analysis expert. Return valid JSON only.")
+        response = await self._llm_generate(prompt, "You are a JD analysis expert. Return valid JSON only.")
         parsed = self._parse_json_from_response(response)
         if not parsed:
             parsed = {
@@ -287,7 +287,7 @@ Return ONLY a JSON object:
             print(f"[QuestionGen] Smart router failed, using fallback: {e}")
             question_data = None
 
-        # ── Fallback: monolithic Gemini generator (original logic) ──
+        # ── Fallback: monolithic LLM generator (original logic) ──
         if not question_data or "question" not in question_data:
             question_data = await self._generate_question_fallback(
                 job_role, calibrated_difficulty, previous_questions,
@@ -317,7 +317,7 @@ Return ONLY a JSON object:
         jd_analysis: Dict[str, Any] = None,
         is_coding_question: bool = False,
     ) -> Dict[str, Any]:
-        """Fallback monolithic question generator using direct Gemini call."""
+        """Fallback monolithic question generator using direct LLM call."""
 
         prev_q_text = "\n".join(f"- {q}" for q in previous_questions[-15:]) if previous_questions else "None"
         prev_a_text = ""
@@ -410,7 +410,7 @@ Return ONLY a JSON object in this exact format:
 
         system = f"You are an expert {round_type} interviewer. Generate SHORT, CONCISE, and relevant questions (1-2 sentences max). Never write long or multi-part questions. Always return valid JSON."
 
-        response = await self._gemini_generate(prompt, system)
+        response = await self._llm_generate(prompt, system)
         parsed = self._parse_json_from_response(response)
 
         if not parsed or "question" not in parsed:
@@ -699,7 +699,7 @@ Consider:
 Return ONLY a JSON object: {{"depth_score": <number>}}"""
 
         try:
-            response = await self._gemini_generate(prompt, "You are an expert evaluator. Return only valid JSON.", fast=True)
+            response = await self._llm_generate(prompt, "You are an expert evaluator. Return only valid JSON.", fast=True)
             parsed = self._parse_json_from_response(response)
             score = parsed.get("depth_score", sim_score * 0.8)
             return max(0, min(100, float(score)))
@@ -718,7 +718,7 @@ Provide constructive feedback: what was good, what could be improved, and one sp
 
         system = "You are an expert interviewer providing brief, constructive, actionable feedback."
         try:
-            result = await self._gemini_generate(prompt, system, fast=True)
+            result = await self._llm_generate(prompt, system, fast=True)
             if result.strip():
                 return result.strip()
         except Exception:
@@ -822,7 +822,7 @@ Return ONLY a JSON object:
   "follow_up_questions": ["q1", "q2"]
 }}"""
 
-        response = await self._gemini_generate(prompt, "You are an expert code reviewer. Return valid JSON only.")
+        response = await self._llm_generate(prompt, "You are an expert code reviewer. Return valid JSON only.")
         parsed = self._parse_json_from_response(response)
 
         if not parsed or "overall_score" not in parsed:

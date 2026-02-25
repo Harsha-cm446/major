@@ -11,7 +11,7 @@ from typing import Optional, Dict, Any
 from app.core.security import get_current_user
 from app.services.practice_mode_service import practice_mode_service
 
-router = APIRouter(prefix="/practice", tags=["practice"])
+router = APIRouter(prefix="/api/practice", tags=["practice"])
 
 
 # ── Request Models ────────────────────────────────

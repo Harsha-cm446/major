@@ -134,11 +134,11 @@ export default function DataCollectionPage() {
             <div className="mt-4 bg-gray-50 rounded-xl p-4">
               <div className="grid grid-cols-3 gap-3 mb-3">
                 <div className="text-center">
-                  <div className="text-lg font-bold text-gray-900">{profile.github.repos_count || 0}</div>
+                  <div className="text-lg font-bold text-gray-900">{profile.github.public_repos || 0}</div>
                   <div className="text-xs text-gray-500">Repositories</div>
                 </div>
                 <div className="text-center">
-                  <div className="text-lg font-bold text-gray-900">{profile.github.languages?.length || 0}</div>
+                  <div className="text-lg font-bold text-gray-900">{profile.github.primary_languages?.length || 0}</div>
                   <div className="text-xs text-gray-500">Languages</div>
                 </div>
                 <div className="text-center">
@@ -146,9 +146,9 @@ export default function DataCollectionPage() {
                   <div className="text-xs text-gray-500">Score</div>
                 </div>
               </div>
-              {profile.github.top_languages && (
+              {profile.github.primary_languages && (
                 <div className="flex flex-wrap gap-1.5">
-                  {profile.github.top_languages.map((lang) => (
+                  {profile.github.primary_languages.map((lang) => (
                     <span key={lang} className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">{lang}</span>
                   ))}
                 </div>

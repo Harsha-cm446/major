@@ -33,7 +33,7 @@ Architecture:
   └──────────────────┘
 
 Training Architecture (LoRA Fine-Tuning):
-  Base Model: Gemini 2.5 Flash
+  Base Model: Groq llama-3.3-70b-versatile
   Adapter: LoRA (rank=16, alpha=32)
   Dataset: Interview question-answer pairs per category
   Evaluation: BLEU, ROUGE-L, Question Quality Score
@@ -110,15 +110,15 @@ class QuestionGenerationService:
         return model_registry.embedding_model
 
     @property
-    def gemini_client(self):
+    def groq_client(self):
         from app.services.model_registry import model_registry
-        return model_registry.gemini_client
+        return model_registry.groq_client
 
-    async def _gemini_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
-        """Call Google Gemini API with automatic model fallback on quota errors."""
+    async def _llm_generate(self, prompt: str, system: str = "", fast: bool = False) -> str:
+        """Call Groq API with automatic model fallback on quota errors."""
         from app.services.model_registry import model_registry
         max_tokens = 400 if fast else 600
-        return await model_registry.gemini_generate(prompt, system, fast=fast, max_tokens=max_tokens)
+        return await model_registry.llm_generate(prompt, system, fast=fast, max_tokens=max_tokens)
 
     def _parse_json(self, text: str) -> dict:
         m = re.search(r"\{[\s\S]*\}", text)
@@ -179,7 +179,7 @@ Return ONLY valid JSON:
 }}"""
 
         system = "You are an expert behavioral interviewer. Generate SHORT, CONCISE STAR-method questions (1-2 sentences max). Never write long or multi-part questions. Return valid JSON only."
-        response = await self._gemini_generate(prompt, system)
+        response = await self._llm_generate(prompt, system)
         parsed = self._parse_json(response)
 
         if not parsed or "question" not in parsed:
@@ -274,7 +274,7 @@ Return ONLY valid JSON:
 }}"""
 
         system = f"You are an expert {job_role} technical interviewer. Generate SHORT, CONCISE questions (1-2 sentences max). Never write long or multi-part questions. Return valid JSON only."
-        response = await self._gemini_generate(prompt, system)
+        response = await self._llm_generate(prompt, system)
         parsed = self._parse_json(response)
 
         if not parsed or "question" not in parsed:
@@ -338,7 +338,7 @@ Return ONLY valid JSON:
 }}"""
 
         system = "You are an expert situational interviewer. Create SHORT, CONCISE scenario questions (1-3 sentences max). Never write long or wordy questions. Return valid JSON only."
-        response = await self._gemini_generate(prompt, system)
+        response = await self._llm_generate(prompt, system)
         parsed = self._parse_json(response)
 
         if not parsed or "question" not in parsed:
@@ -399,7 +399,7 @@ Return ONLY valid JSON:
 }}"""
 
         system = "You are an expert HR cultural fit assessor. Generate SHORT, CONCISE questions (1-2 sentences max). Never write long or wordy questions. Return valid JSON only."
-        response = await self._gemini_generate(prompt, system)
+        response = await self._llm_generate(prompt, system)
         parsed = self._parse_json(response)
 
         if not parsed or "question" not in parsed:
@@ -659,7 +659,7 @@ Return ONLY valid JSON:
 #       task_type="CAUSAL_LM",
 #   )
 #
-#   model = AutoModelForCausalLM.from_pretrained("google/gemini-2.5-flash")
+#   model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.3-70B-Instruct")
 #   model = get_peft_model(model, lora_config)
 #
 #   training_args = TrainingArguments(

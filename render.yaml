@@ -5,7 +5,7 @@
 #   1. Push this repo to GitHub
 #   2. Go to https://dashboard.render.com → New → Blueprint
 #   3. Connect your repo → Render reads this file and creates all services
-#   4. Set environment variables (MongoDB Atlas URI, JWT secret, SMTP creds, Gemini API key)
+#   4. Set environment variables (MongoDB Atlas URI, JWT secret, SMTP creds, Groq API key)
 
 services:
   # ── Backend (FastAPI) ─────────────────────────────
@@ -27,10 +27,10 @@ services:
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
         value: "1440"
-      - key: GEMINI_API_KEY
+      - key: GROQ_API_KEY
         sync: false
-      - key: GEMINI_MODEL
-        value: gemini-2.5-flash
+      - key: GROQ_MODEL
+        value: llama-3.3-70b-versatile
       - key: FRONTEND_URL
         sync: false
       - key: PUBLIC_URL

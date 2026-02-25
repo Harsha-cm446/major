@@ -9,8 +9,8 @@ with the next model.
 Usage:
     from app.services.model_registry import model_registry
     embedding = model_registry.embedding_model.encode("hello")
-    client = model_registry.gemini_client
-    text = await model_registry.gemini_generate(prompt, system, fast=True)
+    client = model_registry.groq_client
+    text = await model_registry.llm_generate(prompt, system, fast=True)
 """
 
 import time
@@ -42,12 +42,12 @@ class ModelRegistry:
 
     def __init__(self):
         self._embedding_model = None
-        self._gemini_client = None
+        self._groq_client = None
 
         # Build ordered model list: primary (Groq) first, then fallbacks
         self._model_chain = [settings.GROQ_MODEL]
-        if settings.GEMINI_FALLBACK_MODELS:
-            for m in settings.GEMINI_FALLBACK_MODELS.split(","):
+        if settings.GROQ_FALLBACK_MODELS:
+            for m in settings.GROQ_FALLBACK_MODELS.split(","):
                 m = m.strip()
                 if m and m not in self._model_chain:
                     self._model_chain.append(m)
@@ -71,14 +71,14 @@ class ModelRegistry:
 
     # ── Groq client (single instance, backward-compat property name) ─
     @property
-    def gemini_client(self):
-        if self._gemini_client is None:
+    def groq_client(self):
+        if self._groq_client is None:
             try:
-                self._gemini_client = Groq(api_key=settings.GROQ_API_KEY)
+                self._groq_client = Groq(api_key=settings.GROQ_API_KEY)
                 logger.info("ModelRegistry: Groq client created (shared)")
             except Exception as e:
                 logger.warning(f"ModelRegistry: Groq client unavailable: {e}")
-        return self._gemini_client
+        return self._groq_client
 
     @property
     def active_model(self) -> str:
@@ -119,7 +119,7 @@ class ModelRegistry:
         logger.warning(f"ModelRegistry: All models on cooldown, using {soonest_model}")
         return soonest_model
 
-    async def gemini_generate(
+    async def llm_generate(
         self,
         prompt: str,
         system: str = "",
@@ -131,7 +131,7 @@ class ModelRegistry:
         Tries the active model first, then rotates through the fallback
         chain.  Each model gets at most one attempt per call.
         """
-        client = self.gemini_client
+        client = self.groq_client
         if not client:
             logger.error("Groq error: GROQ_API_KEY not configured")
             return ""
@@ -201,7 +201,7 @@ class ModelRegistry:
     def warm_up(self):
         """Eagerly load all models (call during app startup)."""
         _ = self.embedding_model
-        _ = self.gemini_client
+        _ = self.groq_client
         logger.info(f"ModelRegistry: Model chain = {self._model_chain}")
 
 

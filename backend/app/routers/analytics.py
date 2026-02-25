@@ -13,7 +13,7 @@ from app.services.explainability_service import explainability_service
 from app.services.fairness_service import fairness_service
 from app.services.development_roadmap_service import development_roadmap_service
 
-router = APIRouter(prefix="/analytics", tags=["analytics"])
+router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
 
 # ── Request Models ────────────────────────────────

@@ -14,7 +14,7 @@ A production-ready web platform for AI-powered interview practice and corporate 
 | Backend      | Python 3.11+, FastAPI, Uvicorn, WebSockets       |
 | Database     | MongoDB (Motor async driver)                     |
 | Auth         | JWT (python-jose), bcrypt                        |
-| AI / LLM     | Google Gemini (gemini-2.5-flash)                 |
+| AI / LLM     | Groq (llama-3.3-70b-versatile)                   |
 | NLP          | SentenceTransformers (all-MiniLM-L6-v2)         |
 | Speech       | OpenAI Whisper (open-source, local)              |
 | Vision       | OpenCV + DeepFace (emotion/confidence detection) |
@@ -65,7 +65,7 @@ ai-interview-platform/
 - Python 3.11+
 - Node.js 18+
 - MongoDB (local or Atlas free tier)
-- Google Gemini API key — https://aistudio.google.com/apikey
+- Groq API key — https://console.groq.com/keys
 
 ### 1. Clone & Setup Backend
 
@@ -86,11 +86,11 @@ mongod
 docker run -d -p 27017:27017 --name mongo mongo:7
 ```
 
-### 3. Set Gemini API Key
-Add your Gemini API key to the `.env` file:
+### 3. Set Groq API Key
+Add your Groq API key to the `.env` file:
 ```
-GEMINI_API_KEY=your-gemini-api-key-here
-GEMINI_MODEL=gemini-2.5-flash
+GROQ_API_KEY=your-groq-api-key-here
+GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
 ### 4. Run Backend
@@ -208,14 +208,14 @@ EMAIL_FROM=your-email@gmail.com
 | Frontend    | Render (render.com)   |
 | Backend     | Render (render.com)   |
 | Database    | MongoDB Atlas Free    |
-| AI/LLM      | Google Gemini API (free tier available) |
+| AI/LLM      | Groq API (free tier available)         |
 
 ### Deploy to Render
 1. Push to GitHub
 2. Go to [dashboard.render.com](https://dashboard.render.com) → **New** → **Blueprint**
 3. Connect your repo → Render reads `render.yaml` and creates both services
 4. Set these environment variables:
-   - **Backend**: `MONGODB_URL` (Atlas connection string), `GEMINI_API_KEY`, `FRONTEND_URL`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM`
+   - **Backend**: `MONGODB_URL` (Atlas connection string), `GROQ_API_KEY`, `FRONTEND_URL`, `SMTP_USER`, `SMTP_PASSWORD`, `EMAIL_FROM`
    - **Frontend**: `VITE_API_URL` (e.g. `https://ai-interview-backend.onrender.com/api`), `VITE_WS_URL` (e.g. `wss://ai-interview-backend.onrender.com`)
 
 ---

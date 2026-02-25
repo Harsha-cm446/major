@@ -54,7 +54,7 @@ ai-interview-platform/
 | File | Lines | Status | Notes |
 |------|-------|--------|-------|
 | `ai_service.py` | ~1190 | ✅ FIXED | Shared model registry; smart question router; session cleanup |
-| `model_registry.py` | ~55 | ✅ NEW | Singleton SentenceTransformer + Gemini client |
+| `model_registry.py` | ~55 | ✅ NEW | Singleton SentenceTransformer + Groq client |
 | `question_generation_service.py` | ~630 | ✅ FIXED | Was dead code → now wired as smart router; uses shared registry |
 | `rl_adaptation_service.py` | ~600 | ✅ FIXED | Was dead code → now wired for difficulty adaptation; session cleanup |
 | `report_service.py` | ~700 | ✅ OK | PDF with 4 charts + ideal answers |
@@ -126,7 +126,7 @@ ai-interview-platform/
 ## 4. Optimizations Applied
 
 ### 4a. Shared Model Registry (HIGH impact)
-**Before:** 3 separate `SentenceTransformer("all-MiniLM-L6-v2")` instances (~270MB) + 2 separate Gemini clients  
+**Before:** 3 separate `SentenceTransformer("all-MiniLM-L6-v2")` instances (~270MB) + 2 separate Groq clients  
 **After:** Single `model_registry.py` provides one shared instance each — saves ~180MB RAM
 
 ### 4b. Memory Leak Prevention (HIGH impact)
@@ -231,8 +231,8 @@ Removed from `requirements.txt`:
 ### Files Modified
 | File | Changes |
 |------|---------|
-| `backend/app/services/ai_service.py` | Imported 4 services; rewrote `generate_question()` as smart router with RL; added `cleanup_session()`; switched to `model_registry` for embeddings + Gemini |
-| `backend/app/services/question_generation_service.py` | Switched to `model_registry` for embeddings + Gemini |
+| `backend/app/services/ai_service.py` | Imported 4 services; rewrote `generate_question()` as smart router with RL; added `cleanup_session()`; switched to `model_registry` for embeddings + Groq |
+| `backend/app/services/question_generation_service.py` | Switched to `model_registry` for embeddings + Groq |
 | `backend/app/services/data_collection_service.py` | Switched to `model_registry` for embeddings |
 | `backend/app/services/rl_adaptation_service.py` | Added `cleanup_session()` + session eviction cap (500) |
 | `backend/app/routers/mock_interview.py` | Added cleanup calls in `_complete_session()` |

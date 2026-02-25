@@ -129,7 +129,7 @@ class PracticeModeService:
     def __init__(self):
         self._active_sessions: Dict[str, Dict[str, Any]] = {}
         # Per-session gaze FSMs — keyed by session_id
-        self._gaze_fsms: Dict[str, GazeStateMachine] = {}
+        self._gaze_fsms: Dict[str, Any] = {}
 
     def start_practice_session(
         self,
@@ -216,14 +216,18 @@ class PracticeModeService:
 
         # Ensure a gaze FSM exists for this session
         if session_id not in self._gaze_fsms:
-            self._gaze_fsms[session_id] = GazeStateMachine()
+            if GazeStateMachine is not None:
+                self._gaze_fsms[session_id] = GazeStateMachine()
+            else:
+                # Multimodal not available; skip gaze tracking
+                pass
 
-        gaze_fsm = self._gaze_fsms[session_id]
+        gaze_fsm = self._gaze_fsms.get(session_id)
         gaze_state_output = None
         person_count = 0
 
         # Process multimodal inputs if available
-        if video_frame is not None:
+        if video_frame is not None and multimodal_engine is not None:
             try:
                 visual = multimodal_engine.analyze_face(video_frame)
                 print(f"[PRACTICE] analyze_face => face_detected={visual.get('face_detected')} eye_contact_score={visual.get('eye_contact_score')}")
@@ -271,18 +275,21 @@ class PracticeModeService:
                 # Feed the raw gaze score into the FSM (BEFORE EMA smoothing)
                 raw_attention = current_metrics["attention"]
                 print(f"[PRACTICE] Feeding FSM: raw_attention={raw_attention}")
-                gaze_state_output = gaze_fsm.update(raw_attention)
-                print(f"[PRACTICE] FSM output: state={gaze_state_output.get('state')} warning={gaze_state_output.get('show_warning')}")
+                if gaze_fsm is not None:
+                    gaze_state_output = gaze_fsm.update(raw_attention)
+                    print(f"[PRACTICE] FSM output: state={gaze_state_output.get('state')} warning={gaze_state_output.get('show_warning')}")
 
             except Exception as exc:
                 print(f"[PRACTICE] Exception in video processing: {exc}")
                 # On error, check staleness to keep FSM responsive
-                gaze_state_output = gaze_fsm.check_staleness()
+                if gaze_fsm is not None:
+                    gaze_state_output = gaze_fsm.check_staleness()
         else:
             # No video frame this tick — check for camera freeze / dropped frames
-            gaze_state_output = gaze_fsm.check_staleness()
+            if gaze_fsm is not None:
+                gaze_state_output = gaze_fsm.check_staleness()
 
-        if audio_chunk is not None:
+        if audio_chunk is not None and multimodal_engine is not None:
             try:
                 audio_metrics = multimodal_engine.analyze_voice(audio_chunk, sr=16000)
                 current_metrics["stress"] = audio_metrics.get(
@@ -337,13 +344,17 @@ class PracticeModeService:
         # Generate micro-suggestions if warranted
         suggestion = self._generate_micro_suggestion(current_metrics)
 
+        gaze_fallback = {"state": "unknown", "show_warning": False}
+        if gaze_fsm is not None:
+            gaze_fallback = {
+                "state": gaze_fsm.state.value,
+                "show_warning": gaze_fsm.show_warning,
+            }
+
         return {
             "metrics": current_metrics,
             "suggestion": suggestion,
-            "gaze": gaze_state_output or {
-                "state": gaze_fsm.state.value,
-                "show_warning": gaze_fsm.show_warning,
-            },
+            "gaze": gaze_state_output or gaze_fallback,
             "person_count": person_count,
         }
 
@@ -388,8 +399,10 @@ class PracticeModeService:
         try:
             evaluation = await ai_service.evaluate_answer(
                 question=question,
-                answer=answer_text,
-                job_description=f"Practice mode - {session['topic_name']}",
+                ideal_answer="",
+                candidate_answer=answer_text,
+                keywords=[],
+                round_type="Practice",
             )
         except Exception as e:
             # Fallback evaluation

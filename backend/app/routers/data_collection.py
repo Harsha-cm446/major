@@ -196,6 +196,7 @@ async def build_full_profile(
         "skills": profile.get("resume", {}).get("skills", []),
         "github": {
             "username": profile.get("github", {}).get("username"),
+            "public_repos": profile.get("github", {}).get("public_repos", 0),
             "primary_languages": profile.get("github", {}).get("primary_languages", []),
             "contribution_score": profile.get("github", {}).get("contribution_score", 0),
             "repos_analyzed": len(profile.get("github", {}).get("repositories", [])),

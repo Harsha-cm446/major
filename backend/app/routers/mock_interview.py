@@ -178,6 +178,7 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
         experience_level=data.experience_level or "",
         jd_analysis=jd_analysis,
         candidate_profile_context=candidate_profile_context,
+        session_id=session_id,
     )
 
     question_doc = {
@@ -352,6 +353,7 @@ async def submit_answer(
             jd_analysis=session.get("jd_analysis"),
             candidate_profile_context=session.get("candidate_profile_context", ""),
             coding_count=coding_count,
+            session_id=session_id,
         )
 
         try:
@@ -456,6 +458,7 @@ async def submit_answer(
                         jd_analysis=session.get("jd_analysis"),
                         candidate_profile_context=session.get("candidate_profile_context", ""),
                         coding_count=coding_count,
+                        session_id=session_id,
                     )
 
     # ── Generate next question (if not already done in parallel or via code follow-up) ──
@@ -479,6 +482,7 @@ async def submit_answer(
             jd_analysis=session.get("jd_analysis"),
             candidate_profile_context=session.get("candidate_profile_context", ""),
             coding_count=coding_count,
+            session_id=session_id,
         )
     else:
         next_difficulty = ai_service.determine_next_difficulty(
