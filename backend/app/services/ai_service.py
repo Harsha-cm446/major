@@ -25,8 +25,6 @@ except ImportError:
     print("⚠️ sentence-transformers not available — embedding features disabled")
 from sklearn.metrics.pairwise import cosine_similarity
 
-import google.genai as genai
-from google.genai import types as genai_types
 from app.core.config import settings
 
 # Import services for report enrichment and integrated AI subsystems
@@ -129,7 +127,7 @@ class AIService:
         pass  # Gemini SDK doesn't require explicit cleanup
 
     @property
-    def embedding_model(self) -> SentenceTransformer:
+    def embedding_model(self) -> Any:
         from app.services.model_registry import model_registry
         return model_registry.embedding_model
 
@@ -249,6 +247,11 @@ Return ONLY a JSON object:
         try:
             q_num = self._session_question_counts.get(session_id or "", 1)
             total_planned = 15
+
+            print(f"[SessionTrack] session_id={session_id}, q_num={q_num}, "
+                  f"total_planned={total_planned}, progress={q_num/total_planned:.2f}, "
+                  f"coding_count={coding_count}, round={round_type}, "
+                  f"difficulty={calibrated_difficulty}")
 
             question_data = await question_generation_service.generate_question_smart(
                 job_role=job_role,
