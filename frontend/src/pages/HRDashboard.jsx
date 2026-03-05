@@ -2,13 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { interviewAPI } from '../services/api';
-import { Plus, Users, Calendar, Trash2, Clock, ArrowRight, Briefcase } from 'lucide-react';
+import { Plus, Users, Calendar, Trash2, Clock, ArrowRight, Briefcase, LogOut, Loader2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function HRDashboard() {
   const { user } = useAuth();
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [endingSessionId, setEndingSessionId] = useState(null);
 
   const load = () => {
     interviewAPI.listSessions()
@@ -27,6 +28,20 @@ export default function HRDashboard() {
       load();
     } catch {
       toast.error('Delete failed');
+    }
+  };
+
+  const handleEndSession = async (id) => {
+    if (!confirm('End this session? This will force-complete all in-progress candidate interviews.')) return;
+    setEndingSessionId(id);
+    try {
+      await interviewAPI.endSession(id);
+      toast.success('Session ended');
+      load();
+    } catch {
+      toast.error('Failed to end session');
+    } finally {
+      setEndingSessionId(null);
     }
   };
 
@@ -133,6 +148,16 @@ export default function HRDashboard() {
                 >
                   Go Live <ArrowRight size={14} />
                 </Link>
+                {s.status !== 'completed' && (
+                  <button
+                    onClick={() => handleEndSession(s.id)}
+                    disabled={endingSessionId === s.id}
+                    className="p-2.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all disabled:opacity-50"
+                    title="End Session"
+                  >
+                    {endingSessionId === s.id ? <Loader2 size={16} className="animate-spin" /> : <LogOut size={16} />}
+                  </button>
+                )}
                 <button
                   onClick={() => handleDelete(s.id)}
                   className="p-2.5 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"

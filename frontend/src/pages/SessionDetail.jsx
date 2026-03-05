@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { interviewAPI, candidateAPI } from '../services/api';
 import toast from 'react-hot-toast';
-import { Mail, Users, Copy, Loader2, Eye, Calendar, Clock, Send } from 'lucide-react';
+import { Mail, Users, Copy, Loader2, Eye, Calendar, Clock, Send, LogOut } from 'lucide-react';
 
 export default function SessionDetail() {
   const { sessionId } = useParams();
@@ -12,6 +12,8 @@ export default function SessionDetail() {
   const [loading, setLoading] = useState(true);
   const [inviting, setInviting] = useState(false);
   const [publicUrl, setPublicUrl] = useState(window.location.origin);
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [endingSession, setEndingSession] = useState(false);
 
   const load = async () => {
     try {
@@ -76,6 +78,52 @@ export default function SessionDetail() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
+      {/* End Session Confirmation Modal */}
+      {showEndConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl border border-gray-200 p-8 max-w-md w-full mx-4">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4">
+                <LogOut className="text-red-600" size={28} />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">End Session?</h3>
+              <p className="text-gray-500 text-sm mb-6">
+                This will end the session and force-complete all in-progress candidate interviews. This cannot be undone.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowEndConfirm(false)}
+                  className="flex-1 px-4 py-2.5 rounded-xl border-2 border-gray-200 text-gray-700 font-semibold hover:bg-gray-50 transition"
+                  disabled={endingSession}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    setEndingSession(true);
+                    try {
+                      await interviewAPI.endSession(sessionId);
+                      toast.success('Session ended successfully');
+                      setShowEndConfirm(false);
+                      load();
+                    } catch (err) {
+                      toast.error('Failed to end session');
+                    } finally {
+                      setEndingSession(false);
+                    }
+                  }}
+                  disabled={endingSession}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 text-white font-semibold hover:bg-red-700 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {endingSession ? <Loader2 size={16} className="animate-spin" /> : <LogOut size={16} />}
+                  {endingSession ? 'Ending...' : 'End Session'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Session info */}
       <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-6 mb-8 slide-up">
         <div className="flex flex-col sm:flex-row justify-between items-start">
@@ -88,13 +136,24 @@ export default function SessionDetail() {
               <span className="flex items-center gap-1.5"><Users size={14} className="text-gray-400" />{session.candidate_count} candidates</span>
             </div>
           </div>
-          <Link
-            to={`/hr/live/${sessionId}`}
-            className="mt-4 sm:mt-0 gradient-bg text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 hover:opacity-90 transition-all shadow-md"
-          >
-            <Eye size={18} />
-            <span>Monitor Interviews</span>
-          </Link>
+          <div className="mt-4 sm:mt-0 flex items-center gap-3">
+            {session.status !== 'completed' && (
+              <button
+                onClick={() => setShowEndConfirm(true)}
+                className="flex items-center gap-2 px-5 py-3 rounded-xl font-semibold bg-red-50 text-red-600 hover:bg-red-100 transition-all"
+              >
+                <LogOut size={18} />
+                <span>End Session</span>
+              </button>
+            )}
+            <Link
+              to={`/hr/live/${sessionId}`}
+              className="gradient-bg text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 hover:opacity-90 transition-all shadow-md"
+            >
+              <Eye size={18} />
+              <span>Monitor Interviews</span>
+            </Link>
+          </div>
         </div>
       </div>
 

@@ -105,6 +105,7 @@ export const interviewAPI = {
   listSessions: () => api.get('/interviews/sessions'),
   getSession: (id) => api.get(`/interviews/sessions/${id}`),
   deleteSession: (id) => api.delete(`/interviews/sessions/${id}`),
+  endSession: (id) => api.post(`/interviews/sessions/${id}/end`),
   inviteCandidates: (sessionId, emails) =>
     api.post(`/interviews/sessions/${sessionId}/invite`, { emails }),
   listCandidates: (sessionId) =>

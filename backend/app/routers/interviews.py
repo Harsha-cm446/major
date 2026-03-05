@@ -115,6 +115,47 @@ async def list_candidates(session_id: str, hr_user: dict = Depends(get_hr_user))
     return result
 
 
+@router.post("/sessions/{session_id}/end")
+async def end_session(session_id: str, hr_user: dict = Depends(get_hr_user)):
+    """End an interview session and force-complete all in-progress candidate interviews."""
+    db = get_database()
+    session = await db.interview_sessions.find_one({"_id": ObjectId(session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session["created_by"] != str(hr_user["_id"]):
+        raise HTTPException(status_code=403, detail="Not your session")
+
+    # Mark session as completed
+    await db.interview_sessions.update_one(
+        {"_id": ObjectId(session_id)},
+        {"$set": {"status": "completed", "ended_at": datetime.utcnow()}},
+    )
+
+    # Force-complete all in-progress candidate AI sessions for this session
+    candidates = []
+    async for c in db.candidates.find({"interview_session_id": session_id}):
+        candidates.append(c)
+
+    ended_count = 0
+    for candidate in candidates:
+        if candidate.get("status") in ("invited", "joined"):
+            ai_session = await db.candidate_ai_sessions.find_one(
+                {"candidate_token": candidate["unique_token"]}
+            )
+            if ai_session and ai_session.get("status") != "completed":
+                await db.candidate_ai_sessions.update_one(
+                    {"_id": ai_session["_id"]},
+                    {"$set": {"status": "completed", "completed_at": datetime.utcnow(), "end_reason": "session_ended_by_hr"}},
+                )
+                ended_count += 1
+            await db.candidates.update_one(
+                {"_id": candidate["_id"]},
+                {"$set": {"status": "completed"}},
+            )
+
+    return {"detail": "Session ended", "candidates_ended": ended_count}
+
+
 @router.delete("/sessions/{session_id}")
 async def delete_session(session_id: str, hr_user: dict = Depends(get_hr_user)):
     db = get_database()

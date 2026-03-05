@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import {
   Loader2, Users, Eye, ArrowLeft, RefreshCw, BarChart3,
   CheckCircle, Clock, AlertTriangle, FileText, XCircle, Timer,
-  Video, VideoOff, Monitor, X, Shield, UserX, MonitorX, Copy,
+  Video, VideoOff, Monitor, X, Shield, UserX, MonitorX, Copy, LogOut,
 } from 'lucide-react';
 
 const ICE_SERVERS = [
@@ -55,6 +55,8 @@ export default function LiveInterview() {
   const [cameraStream, setCameraStream] = useState(null);
   const [screenStream, setScreenStream] = useState(null);
   const [wsConnected, setWsConnected] = useState(false);
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [endingSession, setEndingSession] = useState(false);
 
   const loadData = async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
@@ -608,15 +610,71 @@ export default function LiveInterview() {
             <p className="text-gray-500">{session?.job_role} • {session?.company_name}</p>
           </div>
         </div>
-        <button
-          onClick={() => loadData(true)}
-          disabled={refreshing}
-          className="flex items-center space-x-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium text-gray-700 transition"
-        >
-          <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
-          <span>Refresh</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={() => loadData(true)}
+            disabled={refreshing}
+            className="flex items-center space-x-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-sm font-medium text-gray-700 transition"
+          >
+            <RefreshCw size={16} className={refreshing ? 'animate-spin' : ''} />
+            <span>Refresh</span>
+          </button>
+          <button
+            onClick={() => setShowEndConfirm(true)}
+            className="flex items-center space-x-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-red-50 text-red-600 hover:bg-red-100 transition"
+            title="End Session"
+          >
+            <LogOut size={16} />
+            <span>End Session</span>
+          </button>
+        </div>
       </div>
+
+      {/* End Session Confirmation Modal */}
+      {showEndConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl border border-gray-200 p-8 max-w-md w-full mx-4">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4">
+                <LogOut className="text-red-600" size={28} />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">End Session?</h3>
+              <p className="text-gray-500 text-sm mb-6">
+                This will end the interview session and force-complete all in-progress candidate interviews. This action cannot be undone.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowEndConfirm(false)}
+                  className="flex-1 px-4 py-2.5 rounded-xl border-2 border-gray-200 text-gray-700 font-semibold hover:bg-gray-50 transition"
+                  disabled={endingSession}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={async () => {
+                    setEndingSession(true);
+                    try {
+                      await interviewAPI.endSession(sessionId);
+                      toast.success('Session ended successfully');
+                      setShowEndConfirm(false);
+                      loadData();
+                    } catch (err) {
+                      toast.error('Failed to end session');
+                    } finally {
+                      setEndingSession(false);
+                    }
+                  }}
+                  disabled={endingSession}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 text-white font-semibold hover:bg-red-700 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {endingSession ? <Loader2 size={16} className="animate-spin" /> : <LogOut size={16} />}
+                  {endingSession ? 'Ending...' : 'End Session'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Info banner */}
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6 flex items-start space-x-3">
