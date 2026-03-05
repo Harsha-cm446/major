@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import {
   Mic, MicOff, Camera, Send, Loader2, User, Briefcase, Clock,
   CheckCircle, Volume2, VolumeX, Timer, AlertTriangle, XCircle, Code,
-  Monitor, Shield, UserX, MonitorX, Eye,
+  Monitor, Shield, UserX, MonitorX, Eye, LogOut,
 } from 'lucide-react';
 
 const ICE_SERVERS = [
@@ -63,6 +63,8 @@ export default function CandidateJoin() {
     gazeViolations: 0, multiPersonAlerts: 0, tabSwitches: 0, totalAwayTime: 0,
   });
   const [tabSwitchAlert, setTabSwitchAlert] = useState(false);
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [endingInterview, setEndingInterview] = useState(false);
   const [eyeTrackAlert, setEyeTrackAlert] = useState(false);
   const [gazeState, setGazeState] = useState('ATTENTIVE');
   const [multiPersonAlert, setMultiPersonAlert] = useState(false);
@@ -439,6 +441,25 @@ export default function CandidateJoin() {
       startSpeechRecognition();
     }
   }, [isRecording, startSpeechRecognition, stopSpeechRecognition]);
+
+  // ── End Interview handler ─────────────────────
+  const handleEndInterview = useCallback(async () => {
+    if (endingInterview) return;
+    setEndingInterview(true);
+    try {
+      stopSpeechRecognition();
+      synthRef.current.cancel();
+      await candidateAPI.endInterview(token);
+      setEndReason('manually_ended');
+      setPhase('done');
+      toast.success('Interview ended successfully');
+    } catch (err) {
+      toast.error('Failed to end interview');
+    } finally {
+      setEndingInterview(false);
+      setShowEndConfirm(false);
+    }
+  }, [token, endingInterview, stopSpeechRecognition]);
 
   // ── Camera ─────────────────────────────────────────
   const toggleCamera = async () => {
@@ -1231,6 +1252,7 @@ export default function CandidateJoin() {
             <p className="text-gray-500 mb-6">
               Thank you for completing the interview for <strong>{info?.job_role}</strong> at <strong>{info?.company_name}</strong>.
               {endReason === 'time_expired' && ' Time expired — your answers have been recorded.'}
+              {endReason === 'manually_ended' && ' You ended the interview early — your answers have been saved.'}
             </p>
             <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-sm text-green-800">
               <CheckCircle size={20} className="inline mr-2" />
@@ -1285,9 +1307,53 @@ export default function CandidateJoin() {
               <User size={16} />
               <span>{candidateName}</span>
             </div>
+
+            {/* End Interview */}
+            <button
+              onClick={() => setShowEndConfirm(true)}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold bg-red-50 text-red-600 hover:bg-red-100 transition"
+              title="End Interview"
+            >
+              <LogOut size={14} />
+              <span className="hidden sm:inline">End</span>
+            </button>
           </div>
         </div>
       </div>
+
+      {/* End Interview Confirmation Modal */}
+      {showEndConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl border border-gray-200 p-8 max-w-md w-full mx-4">
+            <div className="text-center">
+              <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4">
+                <LogOut className="text-red-600" size={28} />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">End Interview?</h3>
+              <p className="text-gray-500 text-sm mb-6">
+                Are you sure you want to end the interview now? Your answers so far will be saved.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowEndConfirm(false)}
+                  className="flex-1 px-4 py-2.5 rounded-xl border-2 border-gray-200 text-gray-700 font-semibold hover:bg-gray-50 transition"
+                  disabled={endingInterview}
+                >
+                  Continue Interview
+                </button>
+                <button
+                  onClick={handleEndInterview}
+                  disabled={endingInterview}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-red-600 text-white font-semibold hover:bg-red-700 transition flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {endingInterview ? <Loader2 size={16} className="animate-spin" /> : <LogOut size={16} />}
+                  {endingInterview ? 'Ending...' : 'End Now'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Time progress bar */}
       {timeStatus && (

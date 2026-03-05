@@ -73,8 +73,15 @@ class ModelRegistry:
     @property
     def groq_client(self):
         if self._groq_client is None:
+            api_key = settings.GROQ_API_KEY
+            if not api_key:
+                logger.error(
+                    "ModelRegistry: GROQ_API_KEY is empty — LLM calls will fail. "
+                    "Set GROQ_API_KEY in backend/.env"
+                )
+                return None
             try:
-                self._groq_client = Groq(api_key=settings.GROQ_API_KEY)
+                self._groq_client = Groq(api_key=api_key)
                 logger.info("ModelRegistry: Groq client created (shared)")
             except Exception as e:
                 logger.warning(f"ModelRegistry: Groq client unavailable: {e}")
@@ -84,6 +91,9 @@ class ModelRegistry:
     def active_model(self) -> str:
         """Return the currently active model name."""
         return self._model_chain[self._active_model_idx]
+
+    # HTTP status codes that indicate authentication / authorization failure
+    _AUTH_ERROR_CODES = (401, 403)
 
     def _is_quota_error(self, error: Exception) -> bool:
         """Check if an exception indicates a quota / rate-limit problem."""
@@ -97,6 +107,16 @@ class ModelRegistry:
         if status in (429, 503):
             return True
         return False
+
+    def _is_auth_error(self, error: Exception) -> bool:
+        """Check if an exception indicates an authentication failure (bad API key)."""
+        status = getattr(error, "status_code", None) or getattr(
+            getattr(error, "response", None), "status_code", None
+        )
+        if status in self._AUTH_ERROR_CODES:
+            return True
+        err_str = str(error).lower()
+        return any(m in err_str for m in ("401", "403", "invalid api key", "invalid_api_key", "authentication", "unauthorized"))
 
     def _next_available_model(self, skip_model: str) -> Optional[str]:
         """Find the next model that is not on cooldown."""
@@ -167,6 +187,7 @@ class ModelRegistry:
         last_error = None
         for model_name in models_to_try:
             try:
+                logger.info(f"ModelRegistry: Calling Groq model={model_name} max_tokens={max_tokens}")
                 response = await asyncio.to_thread(
                     client.chat.completions.create,
                     model=model_name,
@@ -176,6 +197,7 @@ class ModelRegistry:
                 )
                 text = response.choices[0].message.content if response.choices else ""
                 text = text or ""
+                logger.info(f"ModelRegistry: Groq OK model={model_name} len={len(text)}")
                 if text:
                     # Success — update active model index
                     idx = self._model_chain.index(model_name)
@@ -185,7 +207,14 @@ class ModelRegistry:
                 return text
             except Exception as e:
                 last_error = e
-                if self._is_quota_error(e):
+                if self._is_auth_error(e):
+                    logger.error(
+                        f"Groq AUTH ERROR ({model_name}): {e}  — "
+                        f"Check that GROQ_API_KEY in backend/.env is valid. "
+                        f"Get a key at https://console.groq.com/keys"
+                    )
+                    return ""  # Auth errors affect all models — stop immediately
+                elif self._is_quota_error(e):
                     logger.warning(f"ModelRegistry: Quota/rate-limit on {model_name}: {e}")
                     self._model_cooldowns[model_name] = time.time() + self._cooldown_seconds
                     continue  # try next model

@@ -1,4 +1,20 @@
+import os
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+# Resolve .env path reliably regardless of working directory.
+# Priority: backend/.env (next to this file) → project-root .env → CWD .env
+_THIS_DIR = Path(__file__).resolve().parent            # backend/app/core/
+_BACKEND_DIR = _THIS_DIR.parent.parent                 # backend/
+_PROJECT_DIR = _BACKEND_DIR.parent                     # ai-interview-platform/
+
+_ENV_CANDIDATES = [
+    _BACKEND_DIR / ".env",       # backend/.env  (most common)
+    _PROJECT_DIR / ".env",       # project-root .env
+    Path.cwd() / ".env",         # current working directory
+]
+_ENV_FILE = next((p for p in _ENV_CANDIDATES if p.is_file()), ".env")
 
 
 class Settings(BaseSettings):
@@ -33,7 +49,14 @@ class Settings(BaseSettings):
     PUBLIC_URL: str = ""
 
     class Config:
-        env_file = ".env"
+        env_file = str(_ENV_FILE)
 
 
 settings = Settings()
+
+# Startup diagnostic — print only if GROQ key is missing
+if not settings.GROQ_API_KEY:
+    print(f"⚠️  GROQ_API_KEY is empty! Searched .env files: {[str(p) for p in _ENV_CANDIDATES]}")
+    print(f"   Resolved .env: {_ENV_FILE}")
+else:
+    print(f"✅ Config loaded from {_ENV_FILE} (GROQ key: {settings.GROQ_API_KEY[:8]}...)")
