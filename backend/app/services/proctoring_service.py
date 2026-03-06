@@ -107,6 +107,21 @@ RISK_WEIGHTS = {
 HIGH_RISK_THRESHOLD = 50
 
 
+def _sanitize_for_json(obj):
+    """Recursively convert numpy types to native Python types for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
 # ══════════════════════════════════════════════════════════════════════
 # Data Classes
 # ══════════════════════════════════════════════════════════════════════
@@ -1051,7 +1066,7 @@ class ProctorSession:
             )
 
         # ── Build Response ──────────────────────────────────────
-        return {
+        return _sanitize_for_json({
             "person_count": detection.person_count,
             "suspicious_objects": detection.suspicious_objects,
             "bounding_boxes": detection.bounding_boxes,
@@ -1065,7 +1080,7 @@ class ProctorSession:
                 "is_high_risk": self._risk_engine.is_high_risk,
             },
             "total_violations": self._violation_logger.count,
-        }
+        })
 
     # ── Tab Switch (called from router) ──────────────────────────
 
@@ -1085,7 +1100,7 @@ class ProctorSession:
 
     def generate_report(self) -> Dict[str, Any]:
         """Generate the final integrity report for this session."""
-        return IntegrityReportGenerator.generate(
+        return _sanitize_for_json(IntegrityReportGenerator.generate(
             session_start=self._start_time,
             risk_engine=self._risk_engine,
             violation_logger=self._violation_logger,
@@ -1096,7 +1111,7 @@ class ProctorSession:
             person_alerts=self._person_alerts,
             suspicious_object_events=self._suspicious_object_events,
             tab_switches=self._tab_switches,
-        )
+        ))
 
     def get_status(self) -> Dict[str, Any]:
         """Get current proctoring status (for live dashboard)."""
