@@ -126,6 +126,28 @@ async def groq_diagnostics():
     return model_registry.get_stats()
 
 
+@app.get("/api/diagnostics/proctoring")
+async def proctoring_diagnostics():
+    """Check whether proctoring dependencies (DeepFace, YOLO, OpenCV) are available."""
+    from app.services.proctoring_service import (
+        DEEPFACE_AVAILABLE, YOLO_AVAILABLE, CV2_AVAILABLE, proctor_manager
+    )
+    active_sessions = {}
+    for sid in list(proctor_manager._sessions.keys()):
+        sess = proctor_manager.get(sid)
+        if sess:
+            active_sessions[sid] = sess.get_status()
+    return {
+        "deepface_available": DEEPFACE_AVAILABLE,
+        "yolo_available": YOLO_AVAILABLE,
+        "cv2_available": CV2_AVAILABLE,
+        "identity_verification_enabled": DEEPFACE_AVAILABLE and CV2_AVAILABLE,
+        "object_detection_enabled": YOLO_AVAILABLE,
+        "active_sessions_count": proctor_manager.active_count,
+        "active_sessions": active_sessions,
+    }
+
+
 # ── Run directly: python main.py ─────────────────────
 if __name__ == "__main__":
     import os

@@ -575,7 +575,7 @@ export default function MockInterview() {
 
   // ── Video frame capture helper (shared by both polling loops) ──
   const captureVideoFrame = useCallback(() => {
-    if (!videoRef.current || !cameraOn) return null;
+    if (!videoRef.current || !streamRef.current) return null;
     try {
       const video = videoRef.current;
       if (video.videoWidth === 0 || video.videoHeight === 0) return null;
@@ -588,7 +588,7 @@ export default function MockInterview() {
     } catch {
       return null;
     }
-  }, [cameraOn]);
+  }, []);
 
   // ── Unified polling: gaze + proctoring + live metrics (every 2s) ──
   // Merges the old separate gaze-only (2s) and live-metrics (3s) loops
@@ -744,15 +744,20 @@ export default function MockInterview() {
       let regCount = 0;
       const regTarget = 7;
       const doRegister = async () => {
+        // Wait for video element to be ready (stream attached + producing frames)
+        for (let w = 0; w < 15; w++) {
+          await new Promise(r => setTimeout(r, 200));
+          if (videoRef.current?.videoWidth > 0) break;
+        }
         for (let i = 0; i < regTarget; i++) {
           await new Promise(r => setTimeout(r, 700));
           try {
             const frame = captureVideoFrame();
-            if (!frame) continue;
+            if (!frame) { setFaceRegProgress(i + 1); continue; }
             const resp = await mockAPI.registerFace(res.data.session_id, frame);
             if (resp.data?.registered) regCount++;
             setFaceRegProgress(i + 1);
-          } catch { /* skip frame */ }
+          } catch { setFaceRegProgress(i + 1); /* skip frame */ }
         }
         if (regCount >= 3) {
           setFaceRegPhase('done');
