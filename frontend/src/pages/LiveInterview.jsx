@@ -6,6 +6,7 @@ import {
   Loader2, Users, Eye, ArrowLeft, RefreshCw, BarChart3,
   CheckCircle, Clock, AlertTriangle, FileText, XCircle, Timer,
   Video, VideoOff, Monitor, X, Shield, UserX, MonitorX, Copy, LogOut,
+  ChevronLeft, ChevronRight, LayoutGrid, Maximize2,
 } from 'lucide-react';
 
 const ICE_SERVERS = [
@@ -32,6 +33,67 @@ const ICE_SERVERS = [
   },
 ];
 
+// ── Gallery Tile: auto-attaches stream to video ─────────────────────
+function GalleryVideoTile({ token, stream, candidateName, type, onEnlarge }) {
+  const videoRef = useRef(null);
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [stream]);
+  return (
+    <div className="absolute inset-0">
+      {stream ? (
+        <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full ${type === 'screen' ? 'object-contain' : 'object-cover'}`} />
+      ) : (
+        <div className="w-full h-full flex flex-col items-center justify-center text-gray-500 bg-gray-900">
+          {type === 'screen' ? <Monitor size={20} className="mb-1 text-gray-600" /> : <VideoOff size={20} className="mb-1 text-gray-600" />}
+          <span className="text-[10px] text-gray-600">No {type}</span>
+        </div>
+      )}
+      {/* Type badge */}
+      <div className="absolute bottom-1 left-1 bg-black/60 text-white text-[9px] px-1.5 py-0.5 rounded flex items-center space-x-1">
+        {type === 'screen' ? <Monitor size={8} /> : <Video size={8} />}
+        <span>{candidateName}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Enlarged Video: used in the modal ───────────────────────────────
+function EnlargedVideo({ stream, label, icon, objectFit }) {
+  const videoRef = useRef(null);
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [stream]);
+  return (
+    <>
+      {stream ? (
+        <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full ${objectFit}`} />
+      ) : (
+        <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
+          <VideoOff size={28} className="mb-2" />
+          <span className="text-xs">No {label.toLowerCase()} feed</span>
+        </div>
+      )}
+      <div className="absolute top-3 left-3 bg-black/60 text-white text-xs px-2 py-1 rounded-md flex items-center space-x-1">
+        {icon}
+        <span>{label}</span>
+      </div>
+      {stream && (
+        <div className="absolute top-3 right-3 bg-red-500 text-white text-xs px-2 py-1 rounded-md flex items-center space-x-1">
+          <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
+          <span>LIVE</span>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function LiveInterview() {
   const { sessionId } = useParams();
   const [session, setSession] = useState(null);
@@ -41,7 +103,7 @@ export default function LiveInterview() {
   const [selectedCandidate, setSelectedCandidate] = useState(null);
   const [candidateReport, setCandidateReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('candidates'); // 'candidates' | 'duplicates'
+  const [activeTab, setActiveTab] = useState('candidates'); // 'candidates' | 'duplicates' | 'gallery'
   const [duplicateQuestions, setDuplicateQuestions] = useState(null);
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
 
@@ -57,6 +119,14 @@ export default function LiveInterview() {
   const [wsConnected, setWsConnected] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [endingSession, setEndingSession] = useState(false);
+
+  // ── Gallery View State ──────────────────────────────
+  const [galleryPage, setGalleryPage] = useState(0);
+  const GALLERY_PAGE_SIZE = 10;
+  const galleryPeersRef = useRef({}); // token -> { pc, cameraStream, screenStream }
+  const [galleryStreams, setGalleryStreams] = useState({}); // token -> { camera: MediaStream|null, screen: MediaStream|null, name }
+  const galleryVideoRefs = useRef({}); // token -> video element ref
+  const [enlargedCandidate, setEnlargedCandidate] = useState(null); // token of enlarged candidate
 
   const loadData = async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
@@ -132,6 +202,7 @@ export default function LiveInterview() {
     return () => {
       ws.close();
       closeStream();
+      cleanupAllGalleryPeers();
     };
   }, [sessionId]);
 
@@ -155,12 +226,24 @@ export default function LiveInterview() {
           delete next[data.conn_id];
           return next;
         });
+        // Clean up gallery peer for this candidate
+        cleanupGalleryPeer(data.conn_id);
         break;
       case 'webrtc_offer':
-        handleWebRTCOffer(data);
+        // Check if this offer is for the gallery (multi-stream) or the single-watch
+        if (galleryPeersRef.current[data.from] !== undefined) {
+          handleGalleryOffer(data);
+        } else {
+          handleWebRTCOffer(data);
+        }
         break;
       case 'ice_candidate':
-        handleICECandidate(data);
+        // Route ICE candidate to gallery peer or single-watch peer
+        if (galleryPeersRef.current[data.from]?.pc) {
+          handleGalleryICE(data);
+        } else {
+          handleICECandidate(data);
+        }
         break;
       default:
         break;
@@ -285,6 +368,143 @@ export default function LiveInterview() {
     setScreenStream(null);
     setWatchingCandidate(null);
   }, []);
+
+  // ── Gallery Multi-Stream Functions ──────────────────
+  const requestGalleryStream = useCallback((candidateToken, candidateName) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    // Mark as pending (so we route the offer to gallery handler)
+    galleryPeersRef.current[candidateToken] = { pc: null, name: candidateName };
+    wsRef.current.send(JSON.stringify({
+      type: 'request_stream',
+      target: candidateToken,
+    }));
+  }, []);
+
+  const handleGalleryOffer = useCallback(async (data) => {
+    const token = data.from;
+    const existing = galleryPeersRef.current[token];
+    if (existing?.pc) {
+      existing.pc.close();
+    }
+
+    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const candidateName = existing?.name || token;
+    galleryPeersRef.current[token] = { pc, name: candidateName };
+
+    const assignedStreams = new Map();
+    let cameraAssigned = false;
+
+    pc.ontrack = (event) => {
+      const stream = event.streams[0];
+      if (!stream) return;
+
+      const trackLabel = (event.track.label || '').toLowerCase();
+      const isScreenTrack = trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('monitor') || trackLabel.includes('window');
+
+      if (!assignedStreams.has(stream.id)) {
+        if (isScreenTrack) {
+          assignedStreams.set(stream.id, 'screen');
+        } else if (!cameraAssigned) {
+          assignedStreams.set(stream.id, 'camera');
+          cameraAssigned = true;
+        } else {
+          assignedStreams.set(stream.id, 'screen');
+        }
+      }
+
+      const streamType = assignedStreams.get(stream.id);
+      setGalleryStreams(prev => ({
+        ...prev,
+        [token]: {
+          ...prev[token],
+          name: candidateName,
+          [streamType === 'camera' ? 'camera' : 'screen']: stream,
+        },
+      }));
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({
+          type: 'ice_candidate',
+          target: token,
+          candidate: event.candidate.toJSON(),
+        }));
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        cleanupGalleryPeer(token);
+      }
+    };
+
+    await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    wsRef.current?.send(JSON.stringify({
+      type: 'webrtc_answer',
+      target: token,
+      answer: pc.localDescription.toJSON(),
+    }));
+  }, []);
+
+  const handleGalleryICE = useCallback(async (data) => {
+    const pc = galleryPeersRef.current[data.from]?.pc;
+    if (pc && data.candidate) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      } catch (err) {
+        console.error('[Gallery ICE] Error:', err);
+      }
+    }
+  }, []);
+
+  const cleanupGalleryPeer = useCallback((token) => {
+    const entry = galleryPeersRef.current[token];
+    if (entry?.pc) {
+      entry.pc.close();
+    }
+    delete galleryPeersRef.current[token];
+    setGalleryStreams(prev => {
+      const next = { ...prev };
+      delete next[token];
+      return next;
+    });
+  }, []);
+
+  const cleanupAllGalleryPeers = useCallback(() => {
+    Object.keys(galleryPeersRef.current).forEach(token => {
+      galleryPeersRef.current[token]?.pc?.close();
+    });
+    galleryPeersRef.current = {};
+    setGalleryStreams({});
+  }, []);
+
+  // Request streams for all in-progress streamable candidates on the current gallery page
+  const requestGalleryStreamsForPage = useCallback((page) => {
+    const inProgressTokens = candidates
+      .filter(c => c.status === 'in_progress' && streamableCandidates[c.candidate_token])
+      .map(c => c.candidate_token);
+    const start = page * GALLERY_PAGE_SIZE;
+    const pageTokens = inProgressTokens.slice(start, start + GALLERY_PAGE_SIZE);
+
+    // Clean up peers not on this page
+    Object.keys(galleryPeersRef.current).forEach(token => {
+      if (!pageTokens.includes(token)) {
+        cleanupGalleryPeer(token);
+      }
+    });
+
+    // Request streams for new candidates on this page
+    pageTokens.forEach(token => {
+      if (!galleryPeersRef.current[token]?.pc) {
+        const name = streamableCandidates[token]?.name || candidates.find(c => c.candidate_token === token)?.candidate_name || token;
+        requestGalleryStream(token, name);
+      }
+    });
+  }, [candidates, streamableCandidates, cleanupGalleryPeer, requestGalleryStream]);
 
   const viewReport = async (candidateToken) => {
     setReportLoading(true);
@@ -799,7 +1019,7 @@ export default function LiveInterview() {
         ))}
       </div>
 
-      {/* Tabs: Candidates | Duplicate Questions */}
+      {/* Tabs: Candidates | Gallery | Duplicate Questions */}
       <div className="flex items-center space-x-1 mb-6 bg-gray-100 rounded-xl p-1 w-fit">
         <button
           onClick={() => setActiveTab('candidates')}
@@ -810,6 +1030,28 @@ export default function LiveInterview() {
           }`}
         >
           <span className="flex items-center gap-2"><Users size={15} /> Candidates ({candidates.length})</span>
+        </button>
+        <button
+          onClick={() => {
+            setActiveTab('gallery');
+            // Request streams for the current page when entering gallery
+            setTimeout(() => requestGalleryStreamsForPage(galleryPage), 100);
+          }}
+          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+            activeTab === 'gallery'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            <LayoutGrid size={15} />
+            Gallery
+            {Object.keys(streamableCandidates).length > 0 && (
+              <span className="ml-1 bg-green-100 text-green-700 text-xs px-2 py-0.5 rounded-full font-bold">
+                {Object.keys(streamableCandidates).length}
+              </span>
+            )}
+          </span>
         </button>
         <button
           onClick={() => setActiveTab('duplicates')}
@@ -1091,6 +1333,177 @@ export default function LiveInterview() {
         </div>
       )}
       </>)}
+
+      {/* ── Gallery View Tab ───────────────────────── */}
+      {activeTab === 'gallery' && (() => {
+        const inProgressCandidates = candidates
+          .filter(c => c.status === 'in_progress' && streamableCandidates[c.candidate_token])
+          .map(c => ({
+            token: c.candidate_token,
+            name: c.candidate_name || streamableCandidates[c.candidate_token]?.name || 'Unknown',
+            hasCamera: streamableCandidates[c.candidate_token]?.has_camera,
+            hasScreen: streamableCandidates[c.candidate_token]?.has_screen,
+          }));
+
+        const totalPages = Math.max(1, Math.ceil(inProgressCandidates.length / GALLERY_PAGE_SIZE));
+        const currentPage = Math.min(galleryPage, totalPages - 1);
+        const pageItems = inProgressCandidates.slice(currentPage * GALLERY_PAGE_SIZE, (currentPage + 1) * GALLERY_PAGE_SIZE);
+
+        return (
+          <div>
+            {inProgressCandidates.length === 0 ? (
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
+                <VideoOff size={48} className="mx-auto text-gray-300 mb-4" />
+                <h2 className="text-lg font-semibold text-gray-700 mb-2">No live streams available</h2>
+                <p className="text-gray-400 text-sm">Candidates will appear here once they start their interview with camera enabled.</p>
+              </div>
+            ) : (
+              <>
+                {/* Gallery Grid — each candidate gets a card with camera + screen */}
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {pageItems.map(c => (
+                    <div
+                      key={c.token}
+                      className="bg-gray-800 rounded-xl overflow-hidden cursor-pointer group hover:ring-2 hover:ring-primary-400 transition-all"
+                      onClick={() => setEnlargedCandidate(c.token)}
+                    >
+                      {/* Candidate name header */}
+                      <div className="flex items-center justify-between px-3 py-2 bg-gray-900">
+                        <div className="flex items-center space-x-2">
+                          <div className="w-6 h-6 rounded-full bg-primary-600 flex items-center justify-center text-white text-xs font-bold">
+                            {c.name?.[0]?.toUpperCase() || '?'}
+                          </div>
+                          <span className="text-white text-sm font-medium truncate">{c.name}</span>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          {galleryStreams[c.token]?.camera && (
+                            <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded flex items-center space-x-1">
+                              <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
+                              <span>LIVE</span>
+                            </span>
+                          )}
+                          <Maximize2 size={12} className="text-gray-400 opacity-0 group-hover:opacity-100 transition" />
+                        </div>
+                      </div>
+                      {/* Camera + Screen side by side */}
+                      <div className="grid grid-cols-2 gap-px bg-gray-700">
+                        {/* Camera feed */}
+                        <div className="relative bg-black" style={{ aspectRatio: '4/3' }}>
+                          <GalleryVideoTile
+                            token={c.token}
+                            stream={galleryStreams[c.token]?.camera}
+                            candidateName="Camera"
+                            type="camera"
+                            onEnlarge={() => setEnlargedCandidate(c.token)}
+                          />
+                        </div>
+                        {/* Screen share feed */}
+                        <div className="relative bg-black" style={{ aspectRatio: '4/3' }}>
+                          <GalleryVideoTile
+                            token={c.token}
+                            stream={galleryStreams[c.token]?.screen}
+                            candidateName="Screen"
+                            type="screen"
+                            onEnlarge={() => setEnlargedCandidate(c.token)}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Pagination */}
+                {totalPages > 1 && (
+                  <div className="flex items-center justify-center space-x-4 mt-6">
+                    <button
+                      onClick={() => {
+                        const newPage = currentPage - 1;
+                        setGalleryPage(newPage);
+                        requestGalleryStreamsForPage(newPage);
+                      }}
+                      disabled={currentPage === 0}
+                      className="flex items-center space-x-1 px-4 py-2 rounded-lg bg-white border border-gray-200 text-sm font-medium hover:bg-gray-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <ChevronLeft size={16} />
+                      <span>Previous</span>
+                    </button>
+                    <div className="flex items-center space-x-2">
+                      {Array.from({ length: totalPages }, (_, i) => (
+                        <button
+                          key={i}
+                          onClick={() => {
+                            setGalleryPage(i);
+                            requestGalleryStreamsForPage(i);
+                          }}
+                          className={`w-8 h-8 rounded-lg text-sm font-semibold transition ${
+                            i === currentPage
+                              ? 'bg-primary-600 text-white shadow-sm'
+                              : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
+                          }`}
+                        >
+                          {i + 1}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => {
+                        const newPage = currentPage + 1;
+                        setGalleryPage(newPage);
+                        requestGalleryStreamsForPage(newPage);
+                      }}
+                      disabled={currentPage >= totalPages - 1}
+                      className="flex items-center space-x-1 px-4 py-2 rounded-lg bg-white border border-gray-200 text-sm font-medium hover:bg-gray-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      <span>Next</span>
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
+                )}
+
+                {/* Candidate count info */}
+                <div className="text-center mt-3 text-xs text-gray-400">
+                  Showing {currentPage * GALLERY_PAGE_SIZE + 1}–{Math.min((currentPage + 1) * GALLERY_PAGE_SIZE, inProgressCandidates.length)} of {inProgressCandidates.length} live candidates
+                </div>
+              </>
+            )}
+
+            {/* ── Enlarged Candidate Modal ──────────────── */}
+            {enlargedCandidate && galleryStreams[enlargedCandidate] && (() => {
+              const gs = galleryStreams[enlargedCandidate];
+              const candidateName = gs.name || enlargedCandidate;
+              return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setEnlargedCandidate(null)}>
+                  <div className="relative w-full max-w-5xl mx-4" onClick={e => e.stopPropagation()}>
+                    {/* Close button */}
+                    <button
+                      onClick={() => setEnlargedCandidate(null)}
+                      className="absolute -top-12 right-0 p-2 bg-white/10 hover:bg-white/20 rounded-full transition z-10"
+                    >
+                      <X size={24} className="text-white" />
+                    </button>
+
+                    {/* Candidate name */}
+                    <div className="text-center mb-4">
+                      <h3 className="text-white text-lg font-bold">{candidateName}</h3>
+                      <span className="text-gray-300 text-sm">Live Interview Feed</span>
+                    </div>
+
+                    {/* Camera + Screen side by side */}
+                    <div className="grid md:grid-cols-2 gap-2">
+                      <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: '16/9' }}>
+                        <EnlargedVideo stream={gs.camera} label="Camera" icon={<Video size={14} />} objectFit="object-cover" />
+                      </div>
+                      <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: '16/9' }}>
+                        <EnlargedVideo stream={gs.screen} label="Screen" icon={<Monitor size={14} />} objectFit="object-contain" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        );
+      })()}
     </div>
   );
 }
