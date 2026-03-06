@@ -81,15 +81,19 @@ class ModelRegistry:
         if self._groq_client is None:
             api_key = settings.GROQ_API_KEY
             if not api_key:
+                print(f"[ModelRegistry] GROQ_API_KEY is empty (len=0) — LLM calls will fail")
                 logger.error(
                     "ModelRegistry: GROQ_API_KEY is empty — LLM calls will fail. "
                     "Set GROQ_API_KEY in backend/.env"
                 )
                 return None
             try:
+                print(f"[ModelRegistry] Creating Groq client (key len={len(api_key)}, prefix={api_key[:8]}...)")
                 self._groq_client = Groq(api_key=api_key)
+                print(f"[ModelRegistry] Groq client created successfully")
                 logger.info("ModelRegistry: Groq client created (shared)")
             except Exception as e:
+                print(f"[ModelRegistry] Groq client creation FAILED: {e}")
                 logger.warning(f"ModelRegistry: Groq client unavailable: {e}")
         return self._groq_client
 
@@ -159,8 +163,10 @@ class ModelRegistry:
         """
         client = self.groq_client
         if not client:
-            logger.error("Groq error: GROQ_API_KEY not configured")
+            print(f"[llm_generate] ABORT: groq_client is None — GROQ_API_KEY missing or empty")
+            logger.error("Groq error: GROQ_API_KEY not configured — client is None")
             return ""
+        print(f"[llm_generate] groq_client OK, type={type(client).__name__}")
 
         if max_tokens is None:
             max_tokens = 512 if fast else 2048
@@ -185,16 +191,21 @@ class ModelRegistry:
                 models_to_try.append(m)
                 tried.add(m)
 
+        print(f"[llm_generate] models_to_try={models_to_try}, prompt_len={len(prompt)}")
+        logger.info(f"ModelRegistry: models_to_try={models_to_try}")
+
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
+        print(f"[llm_generate] messages count={len(messages)}, entering model loop ({len(models_to_try)} models)")
         last_error = None
         for model_name in models_to_try:
             try:
                 self._api_call_count += 1
                 self._last_call_ts = time.time()
+                print(f"[llm_generate] Calling Groq model={model_name} max_tokens={max_tokens} (call #{self._api_call_count})")
                 logger.info(f"ModelRegistry: Calling Groq model={model_name} max_tokens={max_tokens} (call #{self._api_call_count})")
                 response = await asyncio.to_thread(
                     client.chat.completions.create,
@@ -206,6 +217,7 @@ class ModelRegistry:
                 text = response.choices[0].message.content if response.choices else ""
                 text = text or ""
                 self._api_call_success += 1
+                print(f"[llm_generate] Groq OK model={model_name} response_len={len(text)} (success #{self._api_call_success})")
                 logger.info(f"ModelRegistry: Groq OK model={model_name} len={len(text)} (success #{self._api_call_success})")
                 if text:
                     # Success — update active model index
@@ -217,6 +229,7 @@ class ModelRegistry:
             except Exception as e:
                 self._api_call_fail += 1
                 last_error = e
+                print(f"[llm_generate] EXCEPTION model={model_name}: {type(e).__name__}: {e}")
                 if self._is_auth_error(e):
                     logger.error(
                         f"Groq AUTH ERROR ({model_name}): {e}  — "
@@ -234,6 +247,7 @@ class ModelRegistry:
                     return ""
 
         # All models exhausted
+        print(f"[llm_generate] All {len(models_to_try)} models exhausted. Last error: {last_error}")
         logger.error(f"Groq error: All models exhausted. Last error: {last_error}")
         return ""
 
@@ -248,6 +262,7 @@ class ModelRegistry:
         import datetime as _dt
         return {
             "groq_key_configured": bool(settings.GROQ_API_KEY),
+            "groq_key_length": len(settings.GROQ_API_KEY),
             "groq_client_ready": self._groq_client is not None,
             "active_model": self.active_model,
             "model_chain": self._model_chain,
