@@ -12,6 +12,21 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Pre-download Vosk STT model during build so it's available instantly at runtime
+# Uses the smaller model for Docker deployments (40MB vs 1.8GB)
+# Set VOSK_MODEL_NAME env var to override at runtime
+ENV VOSK_MODEL_NAME=vosk-model-small-en-us-0.15
+RUN python -c "\
+try:\
+    from vosk import Model, SetLogLevel;\
+    SetLogLevel(-1);\
+    print('Downloading Vosk model...');\
+    m = Model(model_name='vosk-model-small-en-us-0.15');\
+    print('Vosk model ready');\
+except Exception as e:\
+    print(f'Vosk model pre-download skipped: {e}')\
+"
+
 EXPOSE 8000
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

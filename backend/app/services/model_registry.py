@@ -44,6 +44,12 @@ class ModelRegistry:
         self._embedding_model = None
         self._groq_client = None
 
+        # API call tracking
+        self._api_call_count = 0
+        self._api_call_success = 0
+        self._api_call_fail = 0
+        self._last_call_ts: Optional[float] = None
+
         # Build ordered model list: primary (Groq) first, then fallbacks
         self._model_chain = [settings.GROQ_MODEL]
         if settings.GROQ_FALLBACK_MODELS:
@@ -187,7 +193,9 @@ class ModelRegistry:
         last_error = None
         for model_name in models_to_try:
             try:
-                logger.info(f"ModelRegistry: Calling Groq model={model_name} max_tokens={max_tokens}")
+                self._api_call_count += 1
+                self._last_call_ts = time.time()
+                logger.info(f"ModelRegistry: Calling Groq model={model_name} max_tokens={max_tokens} (call #{self._api_call_count})")
                 response = await asyncio.to_thread(
                     client.chat.completions.create,
                     model=model_name,
@@ -197,7 +205,8 @@ class ModelRegistry:
                 )
                 text = response.choices[0].message.content if response.choices else ""
                 text = text or ""
-                logger.info(f"ModelRegistry: Groq OK model={model_name} len={len(text)}")
+                self._api_call_success += 1
+                logger.info(f"ModelRegistry: Groq OK model={model_name} len={len(text)} (success #{self._api_call_success})")
                 if text:
                     # Success — update active model index
                     idx = self._model_chain.index(model_name)
@@ -206,6 +215,7 @@ class ModelRegistry:
                         logger.info(f"ModelRegistry: Now using model {model_name}")
                 return text
             except Exception as e:
+                self._api_call_fail += 1
                 last_error = e
                 if self._is_auth_error(e):
                     logger.error(
@@ -232,6 +242,23 @@ class ModelRegistry:
         _ = self.embedding_model
         _ = self.groq_client
         logger.info(f"ModelRegistry: Model chain = {self._model_chain}")
+
+    def get_stats(self) -> dict:
+        """Return API call statistics for diagnostics."""
+        import datetime as _dt
+        return {
+            "groq_key_configured": bool(settings.GROQ_API_KEY),
+            "groq_client_ready": self._groq_client is not None,
+            "active_model": self.active_model,
+            "model_chain": self._model_chain,
+            "api_calls_total": self._api_call_count,
+            "api_calls_success": self._api_call_success,
+            "api_calls_failed": self._api_call_fail,
+            "last_call_at": (
+                _dt.datetime.fromtimestamp(self._last_call_ts).isoformat()
+                if self._last_call_ts else None
+            ),
+        }
 
 
 model_registry = ModelRegistry()

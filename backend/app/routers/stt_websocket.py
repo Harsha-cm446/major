@@ -44,6 +44,22 @@ except ImportError:
     get_vosk_model = None
 
 
+@router.get("/api/stt/status")
+async def stt_status():
+    """Health check: is the Vosk STT engine ready?"""
+    model_loaded = False
+    if VOSK_AVAILABLE and get_vosk_model is not None:
+        try:
+            model_loaded = get_vosk_model() is not None
+        except Exception:
+            pass
+    return {
+        "vosk_available": VOSK_AVAILABLE,
+        "model_loaded": model_loaded,
+        "engine": "vosk" if model_loaded else "web-speech-api-fallback",
+    }
+
+
 @router.websocket("/ws/stt")
 async def stt_websocket(websocket: WebSocket):
     """

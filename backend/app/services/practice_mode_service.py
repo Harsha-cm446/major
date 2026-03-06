@@ -232,9 +232,12 @@ class PracticeModeService:
         proctor_result = None
 
         # ── Run proctoring pipeline (identity + objects + risk + person count) ──
+        # Use the real session_id (strip "mock_" prefix) so proctoring shares
+        # the same ProctorSession where face registration happened
+        proctor_key = session_id[len("mock_"):] if session_id.startswith("mock_") else session_id
         if video_frame is not None and proctor_manager is not None:
             try:
-                proctor_session = proctor_manager.get_or_create(session_id)
+                proctor_session = proctor_manager.get_or_create(proctor_key)
                 proctor_result = proctor_session.process_frame(video_frame)
                 person_count = proctor_result.get("person_count", 0)
             except Exception as exc:

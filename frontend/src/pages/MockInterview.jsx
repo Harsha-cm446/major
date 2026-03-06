@@ -21,7 +21,7 @@ const ROLES = [
 
 export default function MockInterview() {
   const navigate = useNavigate();
-  const [phase, setPhase] = useState('setup'); // setup | interview | round_transition | done | failed
+  const [phase, setPhase] = useState('setup'); // setup | face_registration | interview | round_transition | done | failed
   const [role, setRole] = useState('Software Engineer');
   const [difficulty, setDifficulty] = useState('medium');
   const [jobDescription, setJobDescription] = useState('');
@@ -98,6 +98,7 @@ export default function MockInterview() {
   const audioProcessorRef = useRef(null);
   const sttStreamRef = useRef(null);
   const [sttEngine, setSttEngine] = useState('');
+  const voskAvailableRef = useRef(null); // null = unknown, true/false = checked
 
   // Keep answerRef in sync with answer state
   useEffect(() => { answerRef.current = answer; }, [answer]);
@@ -222,32 +223,50 @@ export default function MockInterview() {
   const startSpeechRecognition = useCallback(async () => {
     if (recognitionRef.current || isSubmittingRef.current) return;
 
-    // Try Vosk WebSocket first
-    const ws = connectSttWebSocket();
-    const waitForWs = () => new Promise((resolve) => {
-      if (ws.readyState === WebSocket.OPEN) return resolve(true);
-      const timeout = setTimeout(() => resolve(false), 2000);
-      ws.addEventListener('open', () => { clearTimeout(timeout); resolve(true); }, { once: true });
-      ws.addEventListener('error', () => { clearTimeout(timeout); resolve(false); }, { once: true });
-    });
+    // Check if Vosk is available on the server (cached after first check)
+    if (voskAvailableRef.current === null) {
+      try {
+        const API_BASE = import.meta.env.VITE_API_URL || '/api';
+        const resp = await fetch(`${API_BASE}/stt/status`);
+        if (resp.ok) {
+          const data = await resp.json();
+          voskAvailableRef.current = data.model_loaded === true;
+        } else {
+          voskAvailableRef.current = false;
+        }
+      } catch {
+        voskAvailableRef.current = false;
+      }
+    }
 
-    const wsReady = await waitForWs();
-    if (wsReady) {
-      const started = await startVoskStreaming();
-      if (started) {
-        try { ws.send(JSON.stringify({ type: 'reset' })); } catch {}
-        recognitionRef.current = { engine: 'vosk' };
-        setIsRecording(true);
-        setSttEngine('vosk');
-        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
-        silenceTimerRef.current = setTimeout(() => {
-          if (answerRef.current.trim().length >= 5 && !isSubmittingRef.current) {
-            autoListenRef.current = false;
-            stopSpeechRecognition();
-            if (submitRef.current) submitRef.current();
-          }
-        }, SILENCE_TIMEOUT);
-        return;
+    // Try Vosk WebSocket only if server has it ready
+    if (voskAvailableRef.current) {
+      const ws = connectSttWebSocket();
+      const waitForWs = () => new Promise((resolve) => {
+        if (ws.readyState === WebSocket.OPEN) return resolve(true);
+        const timeout = setTimeout(() => resolve(false), 2000);
+        ws.addEventListener('open', () => { clearTimeout(timeout); resolve(true); }, { once: true });
+        ws.addEventListener('error', () => { clearTimeout(timeout); resolve(false); }, { once: true });
+      });
+
+      const wsReady = await waitForWs();
+      if (wsReady) {
+        const started = await startVoskStreaming();
+        if (started) {
+          try { ws.send(JSON.stringify({ type: 'reset' })); } catch {}
+          recognitionRef.current = { engine: 'vosk' };
+          setIsRecording(true);
+          setSttEngine('vosk');
+          if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = setTimeout(() => {
+            if (answerRef.current.trim().length >= 5 && !isSubmittingRef.current) {
+              autoListenRef.current = false;
+              stopSpeechRecognition();
+              if (submitRef.current) submitRef.current();
+            }
+          }, SILENCE_TIMEOUT);
+          return;
+        }
       }
     }
 
@@ -549,7 +568,7 @@ export default function MockInterview() {
 
   // ── Re-attach camera stream when video element mounts ──
   useEffect(() => {
-    if (phase === 'interview' && videoRef.current && streamRef.current) {
+    if ((phase === 'interview' || phase === 'face_registration') && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
     }
   }, [phase]);
@@ -719,9 +738,9 @@ export default function MockInterview() {
       setAnswer('');
       setCodeText('');
 
-      // ── Face Registration Phase ──
+      // ── Face Registration Phase (blocks before questions) ──
       setFaceRegPhase('registering');
-      setPhase('interview');
+      setPhase('face_registration');
       let regCount = 0;
       const regTarget = 7;
       const doRegister = async () => {
@@ -742,9 +761,10 @@ export default function MockInterview() {
           setFaceRegPhase('failed');
           toast('Face registration limited — proctoring will still run', { icon: '⚠️', duration: 4000 });
         }
-        setTimeout(() => setFaceRegPhase('done'), 5000);
+        // Transition to interview phase — questions start now
+        setPhase('interview');
       };
-      doRegister();
+      await doRegister();
     } catch (err) {
       toast.error('Failed to start interview');
     } finally {
@@ -999,6 +1019,52 @@ export default function MockInterview() {
               {loading ? <span className="inline-block w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <ArrowRight size={20} />}
               <span>{loading ? 'Preparing...' : 'Start Interview'}</span>
             </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Face Registration Phase ───────────────────────
+  if (phase === 'face_registration') {
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-12 text-center slide-up">
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-100 p-12">
+          <div className="w-20 h-20 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-5">
+            <Shield size={40} className="text-blue-500" />
+          </div>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">Face Registration</h1>
+          <p className="text-gray-500 mb-6">
+            Please look directly at the camera. We're capturing your face for identity verification during the interview.
+          </p>
+
+          {/* Camera preview */}
+          <div className="relative w-64 h-48 mx-auto mb-6 rounded-xl overflow-hidden border-2 border-blue-200 bg-black">
+            <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+          </div>
+
+          {/* Progress bar */}
+          <div className="w-full max-w-xs mx-auto mb-4">
+            <div className="flex justify-between text-sm text-gray-500 mb-1">
+              <span>Capturing faces...</span>
+              <span>{faceRegProgress}/7</span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-2.5">
+              <div
+                className="bg-blue-500 h-2.5 rounded-full transition-all duration-300"
+                style={{ width: `${(faceRegProgress / 7) * 100}%` }}
+              />
+            </div>
+          </div>
+
+          <p className="text-sm text-gray-400">
+            {faceRegPhase === 'registering' ? 'Please hold still and look at the camera...' :
+             faceRegPhase === 'done' ? '✅ Face registered successfully!' :
+             faceRegPhase === 'failed' ? '⚠️ Limited registration — proceeding with available data' : ''}
+          </p>
+
+          <div className="mt-4">
+            <Loader2 className="animate-spin mx-auto text-blue-500" size={24} />
           </div>
         </div>
       </div>

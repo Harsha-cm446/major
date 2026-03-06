@@ -29,6 +29,27 @@ async def lifespan(app: FastAPI):
         await ai_service.warm_up()
     except Exception as e:
         print(f"⚠️ AI warm-up failed (non-fatal): {e}")
+
+    # Pre-download and cache the Vosk STT model at startup
+    # so it's ready instantly when the first interview starts
+    try:
+        import sys, os
+        _ai_engine_dir = os.path.join(os.path.dirname(__file__), "ai-engine")
+        if os.path.isdir(_ai_engine_dir):
+            sys.path.insert(0, os.path.abspath(_ai_engine_dir))
+        from speech_to_text import get_vosk_model, VOSK_AVAILABLE
+        if VOSK_AVAILABLE:
+            print("⏳ Pre-loading Vosk STT model (this may take a moment on first run)...")
+            model = get_vosk_model()
+            if model:
+                print("✅ Vosk STT model ready")
+            else:
+                print("⚠️ Vosk STT model failed to load (STT will use fallback)")
+        else:
+            print("ℹ️ Vosk not installed — STT will use Web Speech API fallback")
+    except Exception as e:
+        print(f"⚠️ Vosk pre-load failed (non-fatal): {e}")
+
     print("🚀 AI Interview Platform ready")
     yield
     # SHUTDOWN
@@ -96,6 +117,13 @@ async def health():
         "ai_warmed": ai_service._warmed_up,
         "llm_model": settings.GROQ_MODEL,
     }
+
+
+@app.get("/api/diagnostics/groq")
+async def groq_diagnostics():
+    """Show Groq API call statistics for this server instance."""
+    from app.services.model_registry import model_registry
+    return model_registry.get_stats()
 
 
 # ── Run directly: python main.py ─────────────────────
