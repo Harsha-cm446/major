@@ -118,7 +118,14 @@ class QuestionGenerationService:
         """Call Groq API with automatic model fallback on quota errors."""
         from app.services.model_registry import model_registry
         max_tokens = 400 if fast else 600
-        return await model_registry.llm_generate(prompt, system, fast=fast, max_tokens=max_tokens)
+        result = await model_registry.llm_generate(prompt, system, fast=fast, max_tokens=max_tokens)
+        if not result:
+            print(f"[QuestionGen] ⚠️ Groq returned empty — will use template fallback. "
+                  f"Key configured: {bool(model_registry.groq_client)}, "
+                  f"Active model: {model_registry.active_model}")
+        else:
+            print(f"[QuestionGen] ✅ Groq generated {len(result)} chars via {model_registry.active_model}")
+        return result
 
     def _parse_json(self, text: str) -> dict:
         m = re.search(r"\{[\s\S]*\}", text)

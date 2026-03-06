@@ -126,6 +126,45 @@ async def groq_diagnostics():
     return model_registry.get_stats()
 
 
+@app.get("/api/diagnostics/groq-test")
+async def groq_test():
+    """Live test: generate a sample question via Groq to verify the API key works."""
+    from app.services.model_registry import model_registry
+    import time as _time
+    stats = model_registry.get_stats()
+    if not stats["groq_key_configured"]:
+        return {
+            "status": "error",
+            "error": "GROQ_API_KEY is not configured. Set it as an environment variable.",
+            **stats,
+        }
+    t0 = _time.time()
+    try:
+        result = await model_registry.llm_generate(
+            prompt='Generate a short interview question for a software engineer. Return JSON: {"question": "..."}',
+            system="Return valid JSON only.",
+            fast=True,
+            max_tokens=150,
+        )
+        elapsed = round(_time.time() - t0, 2)
+        return {
+            "status": "ok" if result else "empty_response",
+            "response_length": len(result),
+            "response_preview": result[:300] if result else None,
+            "elapsed_seconds": elapsed,
+            "model_used": model_registry.active_model,
+            **stats,
+        }
+    except Exception as e:
+        elapsed = round(_time.time() - t0, 2)
+        return {
+            "status": "error",
+            "error": str(e),
+            "elapsed_seconds": elapsed,
+            **stats,
+        }
+
+
 @app.get("/api/diagnostics/proctoring")
 async def proctoring_diagnostics():
     """Check whether proctoring dependencies (DeepFace, YOLO, OpenCV) are available."""

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # Groq LLM
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
-    GROQ_FALLBACK_MODELS: str = ""
+    GROQ_FALLBACK_MODELS: str = "llama-3.1-8b-instant,llama3-70b-8192,mixtral-8x7b-32768"
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"

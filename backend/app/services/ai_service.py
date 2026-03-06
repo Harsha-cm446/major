@@ -138,7 +138,12 @@ class AIService:
         fast=True uses lower token limit."""
         from app.services.model_registry import model_registry
         full_system = MASTER_SYSTEM_PROMPT + "\n\n" + system
-        return await model_registry.llm_generate(prompt, full_system, fast=fast)
+        result = await model_registry.llm_generate(prompt, full_system, fast=fast)
+        if not result:
+            print(f"[AIService] ⚠️ Groq returned empty — fallback will be used. "
+                  f"Key configured: {bool(model_registry.groq_client)}, "
+                  f"Active model: {model_registry.active_model}")
+        return result
 
     def _parse_json_from_response(self, text: str) -> dict:
         """Extract JSON from LLM response text."""
