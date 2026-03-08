@@ -45,7 +45,7 @@ class Settings(BaseSettings):
 
     # OpenRouter API (fallback when all Gemini keys exhausted)
     OPENROUTER_API_KEY: str = ""
-    OPENROUTER_FALLBACK_MODELS: str = "google/gemini-2.0-flash-lite-001,google/gemini-2.0-flash-001,google/gemini-2.5-flash-lite,google/gemini-2.5-flash"
+    OPENROUTER_FALLBACK_MODELS: str = "nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free,mistralai/mistral-small-3.1-24b-instruct:free,meta-llama/llama-3.3-70b-instruct:free"
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"

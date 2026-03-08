@@ -4,7 +4,7 @@ to prevent duplicate loading across services.
 
 Includes Gemini multi-key fallback + OpenRouter overflow:
   Layer 1: gemini-2.5-flash across 5 Google API keys (100 req/day free)
-  Layer 2: Gemini models via OpenRouter (flash-lite, flash, flash-lite-2.5, flash-2.5)
+  Layer 2: OpenRouter free models (nemotron-3-nano-30b, step-3.5-flash, mistral-small-3.1, llama-3.3-70b)
 
 Usage:
     from app.services.model_registry import model_registry
@@ -29,7 +29,7 @@ class ModelRegistry:
 
     Gemini multi-key fallback + OpenRouter overflow:
     - Layer 1: Try gemini-2.5-flash across all Google API keys
-    - Layer 2: If ALL Gemini keys exhausted, fall back to Gemini via OpenRouter
+    - Layer 2: If ALL Gemini keys exhausted, fall back to OpenRouter free models
     - Interview context is preserved across switches (stateless API calls)
     """
 

@@ -100,4 +100,4 @@ jobs:
               "GEMINI_FALLBACK_API_KEYS=${{ secrets.GEMINI_FALLBACK_API_KEYS }}" \
               "GEMINI_FALLBACK_MODELS=" \
               "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" \
-              "OPENROUTER_FALLBACK_MODELS=google/gemini-2.0-flash-lite-001,google/gemini-2.0-flash-001,google/gemini-2.5-flash-lite,google/gemini-2.5-flash"
+              "OPENROUTER_FALLBACK_MODELS=nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free,mistralai/mistral-small-3.1-24b-instruct:free,meta-llama/llama-3.3-70b-instruct:free"
