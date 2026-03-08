@@ -15,7 +15,7 @@ const ICE_SERVERS = [
   { urls: 'stun:stun2.l.google.com:19302' },
   { urls: 'stun:stun3.l.google.com:19302' },
   { urls: 'stun:stun4.l.google.com:19302' },
-  // Free TURN servers for NAT traversal (critical for mobile networks)
+  // Free TURN servers for NAT traversal
   {
     urls: 'turn:openrelay.metered.ca:80',
     username: 'openrelayproject',
@@ -30,6 +30,22 @@ const ICE_SERVERS = [
     urls: 'turn:openrelay.metered.ca:443?transport=tcp',
     username: 'openrelayproject',
     credential: 'openrelayproject',
+  },
+  // Additional free TURN (relay.metered.ca)
+  {
+    urls: 'turn:a.relay.metered.ca:80',
+    username: 'e8dd65b92af416a2b710dc24',
+    credential: '1laBSqnG6QRKfk+1',
+  },
+  {
+    urls: 'turn:a.relay.metered.ca:443',
+    username: 'e8dd65b92af416a2b710dc24',
+    credential: '1laBSqnG6QRKfk+1',
+  },
+  {
+    urls: 'turn:a.relay.metered.ca:443?transport=tcp',
+    username: 'e8dd65b92af416a2b710dc24',
+    credential: '1laBSqnG6QRKfk+1',
   },
 ];
 
@@ -169,7 +185,6 @@ export default function LiveInterview() {
     if (!sessionId) return;
 
     const hrName = 'HR Manager';
-    // In production (Render), WS_BASE points to the backend; in dev, use same host
     let wsUrl;
     if (WS_BASE) {
       wsUrl = `${WS_BASE}/ws/interview/${sessionId}?role=hr&name=${encodeURIComponent(hrName)}&token=hr_${sessionId}`;
@@ -177,38 +192,61 @@ export default function LiveInterview() {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       wsUrl = `${wsProtocol}//${window.location.host}/ws/interview/${sessionId}?role=hr&name=${encodeURIComponent(hrName)}&token=hr_${sessionId}`;
     }
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
 
-    ws.onopen = () => {
-      console.log('[WS] HR connected to interview room');
-      setWsConnected(true);
+    let ws;
+    let reconnectTimer;
+    let reconnectAttempts = 0;
+
+    const connect = () => {
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log('[WS] HR connected to interview room');
+        setWsConnected(true);
+        reconnectAttempts = 0;
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleWSMessage(data);
+        } catch (e) {
+          console.error('[WS] Parse error:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('[WS] HR disconnected');
+        setWsConnected(false);
+        // Auto-reconnect with exponential backoff (max 10s)
+        if (reconnectAttempts < 20) {
+          const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts), 10000);
+          reconnectAttempts++;
+          console.log(`[WS] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttempts})`);
+          reconnectTimer = setTimeout(connect, delay);
+        }
+      };
+
+      ws.onerror = () => setWsConnected(false);
     };
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handleWSMessage(data);
-      } catch {}
-    };
-
-    ws.onclose = () => {
-      console.log('[WS] HR disconnected');
-      setWsConnected(false);
-    };
-
-    ws.onerror = () => setWsConnected(false);
+    connect();
 
     return () => {
-      ws.close();
+      reconnectAttempts = 100; // prevent reconnect during cleanup
+      clearTimeout(reconnectTimer);
+      if (wsRef.current) wsRef.current.close();
       closeStream();
       cleanupAllGalleryPeers();
     };
   }, [sessionId]);
 
   const handleWSMessage = useCallback((data) => {
+    console.log('[HR WS] Received:', data.type, data.from || '');
     switch (data.type) {
       case 'stream_ready':
+        console.log('[HR WS] Candidate stream ready:', data.from, 'camera:', data.has_camera, 'screen:', data.has_screen);
         setStreamableCandidates((prev) => ({
           ...prev,
           [data.from]: {
@@ -226,23 +264,21 @@ export default function LiveInterview() {
           delete next[data.conn_id];
           return next;
         });
-        // Clean up gallery peer for this candidate
         cleanupGalleryPeer(data.conn_id);
         break;
       case 'webrtc_offer':
-        // Check if this offer is for the gallery (multi-stream) or the single-watch
+        console.log('[HR WS] Got WebRTC offer from:', data.from);
         if (galleryPeersRef.current[data.from] !== undefined) {
-          handleGalleryOffer(data);
+          handleGalleryOffer(data).catch(e => console.error('[Gallery Offer] Error:', e));
         } else {
-          handleWebRTCOffer(data);
+          handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer] Error:', e));
         }
         break;
       case 'ice_candidate':
-        // Route ICE candidate to gallery peer or single-watch peer
         if (galleryPeersRef.current[data.from]?.pc) {
-          handleGalleryICE(data);
+          handleGalleryICE(data).catch(e => console.error('[Gallery ICE] Error:', e));
         } else {
-          handleICECandidate(data);
+          handleICECandidate(data).catch(e => console.error('[ICE] Error:', e));
         }
         break;
       default:
@@ -251,6 +287,7 @@ export default function LiveInterview() {
   }, []);
 
   const handleWebRTCOffer = useCallback(async (data) => {
+    console.log('[HR WebRTC] Handling offer from:', data.from);
     // Close previous peer connection only — do NOT reset watchingCandidate
     if (peerConnectionRef.current) {
       peerConnectionRef.current.close();
@@ -270,8 +307,8 @@ export default function LiveInterview() {
       const stream = event.streams[0];
       if (!stream) return;
 
-      // Determine stream type: first video stream is camera, second is screen
-      // Also check track label for hints (screen shares often have 'screen' or 'display' in label)
+      console.log('[HR WebRTC] ontrack:', event.track.kind, 'label:', event.track.label, 'stream:', stream.id);
+
       const trackLabel = (event.track.label || '').toLowerCase();
       const isScreenTrack = trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('monitor') || trackLabel.includes('window');
 
@@ -287,6 +324,7 @@ export default function LiveInterview() {
       }
 
       const streamType = assignedStreams.get(stream.id);
+      console.log('[HR WebRTC] Stream type:', streamType, 'track:', event.track.kind);
       if (streamType === 'camera') {
         setCameraStream(stream);
       } else {
@@ -305,6 +343,7 @@ export default function LiveInterview() {
     };
 
     pc.onconnectionstatechange = () => {
+      console.log('[HR WebRTC] Connection state:', pc.connectionState);
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
         // Only close the PC, don't reset watching state — allow re-request
         if (peerConnectionRef.current === pc) {
@@ -343,6 +382,7 @@ export default function LiveInterview() {
       toast.error('Not connected to interview room');
       return;
     }
+    console.log('[HR] Requesting stream from:', candidateToken);
     setWatchingCandidate(candidateToken);
     setCameraStream(null);
     setScreenStream(null);
@@ -350,15 +390,25 @@ export default function LiveInterview() {
       type: 'request_stream',
       target: candidateToken,
     }));
-    // Auto-retry after 3s if we don't get streams
+    // Auto-retry after 3s and 6s if we don't get streams
     setTimeout(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN && !peerConnectionRef.current) {
+        console.log('[HR] Retrying stream request (3s)');
         wsRef.current.send(JSON.stringify({
           type: 'request_stream',
           target: candidateToken,
         }));
       }
     }, 3000);
+    setTimeout(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN && !peerConnectionRef.current) {
+        console.log('[HR] Retrying stream request (6s)');
+        wsRef.current.send(JSON.stringify({
+          type: 'request_stream',
+          target: candidateToken,
+        }));
+      }
+    }, 6000);
   }, []);
 
   const closeStream = useCallback(() => {
@@ -903,10 +953,15 @@ export default function LiveInterview() {
           <p className="font-semibold mb-1">AI is conducting two-round interviews</p>
           <p>Candidates start with Technical questions (70% cutoff), then proceed to HR questions. This dashboard auto-refreshes every 10 seconds. View each candidate's round, time remaining, and scores in real-time.</p>
         </div>
-        {wsConnected && (
+        {wsConnected ? (
           <span className="flex items-center space-x-1 text-xs text-green-700 bg-green-100 px-2 py-1 rounded-full flex-shrink-0">
             <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-            <span>Live</span>
+            <span>Live ({Object.keys(streamableCandidates).length} streaming)</span>
+          </span>
+        ) : (
+          <span className="flex items-center space-x-1 text-xs text-red-700 bg-red-100 px-2 py-1 rounded-full flex-shrink-0">
+            <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+            <span>Disconnected</span>
           </span>
         )}
       </div>
@@ -942,6 +997,9 @@ export default function LiveInterview() {
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
                   <VideoOff size={32} className="mb-2" />
                   <span className="text-xs">Waiting for camera feed...</span>
+                  <span className="text-[10px] text-gray-600 mt-1">
+                    {streamableCandidates[watchingCandidate] ? 'Establishing WebRTC connection...' : 'Candidate not yet streaming'}
+                  </span>
                 </div>
               )}
               <div className="absolute top-2 left-2 bg-black/60 text-white text-xs px-2 py-1 rounded-md flex items-center space-x-1">
@@ -1242,15 +1300,17 @@ export default function LiveInterview() {
                   {c.status === 'in_progress' && (
                     <button
                       onClick={() => requestStream(c.candidate_token)}
-                      disabled={!wsConnected}
+                      disabled={!wsConnected || !streamableCandidates[c.candidate_token]}
                       className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-medium transition ${
                         watchingCandidate === c.candidate_token
                           ? 'bg-red-100 text-red-700'
-                          : 'bg-green-50 text-green-700 hover:bg-green-100'
-                      } ${!wsConnected ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          : streamableCandidates[c.candidate_token]
+                          ? 'bg-green-50 text-green-700 hover:bg-green-100'
+                          : 'bg-gray-100 text-gray-400'
+                      } ${(!wsConnected || !streamableCandidates[c.candidate_token]) ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
                       <Video size={14} />
-                      <span>{watchingCandidate === c.candidate_token ? 'Watching' : 'Watch Live'}</span>
+                      <span>{watchingCandidate === c.candidate_token ? 'Watching' : streamableCandidates[c.candidate_token] ? 'Watch Live' : 'Connecting...'}</span>
                     </button>
                   )}
                 </div>

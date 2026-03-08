@@ -30,6 +30,22 @@ const ICE_SERVERS = [
     username: 'openrelayproject',
     credential: 'openrelayproject',
   },
+  // Additional free TURN (relay.metered.ca)
+  {
+    urls: 'turn:a.relay.metered.ca:80',
+    username: 'e8dd65b92af416a2b710dc24',
+    credential: '1laBSqnG6QRKfk+1',
+  },
+  {
+    urls: 'turn:a.relay.metered.ca:443',
+    username: 'e8dd65b92af416a2b710dc24',
+    credential: '1laBSqnG6QRKfk+1',
+  },
+  {
+    urls: 'turn:a.relay.metered.ca:443?transport=tcp',
+    username: 'e8dd65b92af416a2b710dc24',
+    credential: '1laBSqnG6QRKfk+1',
+  },
 ];
 
 export default function CandidateJoin() {
@@ -772,19 +788,23 @@ export default function CandidateJoin() {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('[WS] Connected to interview room');
-      ws.send(JSON.stringify({
+      console.log('[WS] Connected to interview room, session:', interviewSessionId);
+      const streamStatus = {
         type: 'stream_ready',
         has_camera: cameraOn,
         has_screen: !!screenStreamRef.current,
-      }));
+      };
+      console.log('[WS] Sending stream_ready:', streamStatus);
+      ws.send(JSON.stringify(streamStatus));
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        handleWSMessage(data);
-      } catch {}
+        handleWSMessage(data).catch(e => console.error('[Candidate WS] Message handler error:', e));
+      } catch (e) {
+        console.error('[Candidate WS] Parse error:', e);
+      }
     };
 
     ws.onclose = () => console.log('[WS] Disconnected');
@@ -816,8 +836,10 @@ export default function CandidateJoin() {
   }, [phase]);
 
   const handleWSMessage = useCallback(async (data) => {
+    console.log('[Candidate WS] Received:', data.type, data.from || '');
     switch (data.type) {
       case 'request_stream':
+        console.log('[Candidate] HR requesting stream, creating offer for:', data.from);
         await createStreamOffer(data.from);
         break;
       case 'webrtc_answer':
@@ -848,19 +870,39 @@ export default function CandidateJoin() {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     peerConnectionsRef.current[targetId] = pc;
 
+    let tracksAdded = 0;
+
     // Add camera tracks
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, streamRef.current);
+        if (track.readyState === 'live') {
+          pc.addTrack(track, streamRef.current);
+          tracksAdded++;
+          console.log('[Candidate WebRTC] Added track:', track.kind, track.label, 'state:', track.readyState);
+        } else {
+          console.warn('[Candidate WebRTC] Skipping ended track:', track.kind, track.label);
+        }
       });
+    } else {
+      console.warn('[Candidate WebRTC] No camera stream available');
     }
 
     // Add screen share tracks
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, screenStreamRef.current);
+        if (track.readyState === 'live') {
+          pc.addTrack(track, screenStreamRef.current);
+          tracksAdded++;
+          console.log('[Candidate WebRTC] Added screen track:', track.kind, track.label, 'state:', track.readyState);
+        } else {
+          console.warn('[Candidate WebRTC] Skipping ended screen track:', track.kind, track.label);
+        }
       });
+    } else {
+      console.warn('[Candidate WebRTC] No screen stream available');
     }
+
+    console.log('[Candidate WebRTC] Total tracks added:', tracksAdded);
 
     pc.onicecandidate = (event) => {
       if (event.candidate && wsRef.current?.readyState === WebSocket.OPEN) {
@@ -873,6 +915,7 @@ export default function CandidateJoin() {
     };
 
     pc.onconnectionstatechange = () => {
+      console.log('[Candidate WebRTC] Connection state:', pc.connectionState);
       if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
         pc.close();
         delete peerConnectionsRef.current[targetId];
