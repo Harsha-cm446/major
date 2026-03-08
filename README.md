@@ -92,7 +92,11 @@ Add your Gemini API keys to the `.env` file:
 GEMINI_API_KEY=your-primary-gemini-api-key
 GEMINI_FALLBACK_API_KEYS=second-key,third-key
 GEMINI_MODEL=gemini-2.5-flash
-GEMINI_FALLBACK_MODELS=gemini-3-flash-preview,gemini-3.1-flash-lite-preview,gemini-2.5-flash-lite,gemini-3.1-pro-preview,gemini-2.5-pro
+GEMINI_FALLBACK_MODELS=
+
+# OpenRouter API (fallback when Gemini quota exhausted)
+OPENROUTER_API_KEY=your-openrouter-api-key
+OPENROUTER_FALLBACK_MODELS=google/gemini-2.0-flash-lite-001,google/gemini-2.0-flash-001,google/gemini-2.5-flash-lite,google/gemini-2.5-flash
 ```
 
 ### 4. Run Backend

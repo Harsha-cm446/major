@@ -2,10 +2,9 @@
 Shared model registry — provides singleton instances of heavy ML models
 to prevent duplicate loading across services.
 
-Includes Gemini multi-key + model fallback chain:
-  1. Try all models under API Key 1
-  2. If all models exhausted (quota/rate-limit), switch to API Key 2
-  3. Repeat until a key succeeds or all keys exhausted
+Includes Gemini multi-key fallback + OpenRouter overflow:
+  Layer 1: gemini-2.5-flash across 5 Google API keys (100 req/day free)
+  Layer 2: Gemini models via OpenRouter (flash-lite, flash, flash-lite-2.5, flash-2.5)
 
 Usage:
     from app.services.model_registry import model_registry
@@ -28,12 +27,10 @@ logger = logging.getLogger(__name__)
 class ModelRegistry:
     """Lazy-loading singleton registry for shared ML models.
 
-    Gemini multi-key fallback:
-    - Each API key gets its own client instance
-    - On quota / rate-limit errors (429, 503, RESOURCE_EXHAUSTED),
-      the registry tries the next model in the fallback list
-    - If ALL models under one key are exhausted, it rotates to the next key
-    - Interview context is preserved across key switches (stateless API calls)
+    Gemini multi-key fallback + OpenRouter overflow:
+    - Layer 1: Try gemini-2.5-flash across all Google API keys
+    - Layer 2: If ALL Gemini keys exhausted, fall back to Gemini via OpenRouter
+    - Interview context is preserved across switches (stateless API calls)
     """
 
     # Error substrings that indicate quota / rate-limit exhaustion
@@ -46,6 +43,7 @@ class ModelRegistry:
     def __init__(self):
         self._embedding_model = None
         self._gemini_clients: List = []  # List of genai.Client instances
+        self._openrouter_client = None   # OpenAI-compatible client for OpenRouter
         self._active_key_idx = 0
 
         # API call tracking
@@ -56,7 +54,12 @@ class ModelRegistry:
         self._last_error: Optional[str] = None
         self._last_error_type: Optional[str] = None
 
-        # Build ordered model list: primary first, then fallbacks
+        # OpenRouter call tracking
+        self._openrouter_call_count = 0
+        self._openrouter_call_success = 0
+        self._openrouter_call_fail = 0
+
+        # Build ordered Gemini model list: primary first, then fallbacks
         self._model_chain = [settings.GEMINI_MODEL]
         if settings.GEMINI_FALLBACK_MODELS:
             for m in settings.GEMINI_FALLBACK_MODELS.split(","):
@@ -74,10 +77,19 @@ class ModelRegistry:
                 if k and k not in self._api_keys:
                     self._api_keys.append(k)
 
+        # Build OpenRouter model list
+        self._openrouter_models: List[str] = []
+        if settings.OPENROUTER_FALLBACK_MODELS:
+            for m in settings.OPENROUTER_FALLBACK_MODELS.split(","):
+                m = m.strip()
+                if m and m not in self._openrouter_models:
+                    self._openrouter_models.append(m)
+
         # Track which model is currently active + cooldown per model per key
         self._active_model_idx = 0
         self._model_cooldowns: dict = {}  # (key_idx, model) -> timestamp
         self._key_cooldowns: dict = {}    # key_idx -> timestamp
+        self._openrouter_cooldowns: dict = {}  # model_name -> timestamp
         self._cooldown_seconds = 60
 
     # ── SentenceTransformer (single instance, ~90 MB) ────────────
@@ -123,6 +135,24 @@ class ModelRegistry:
             return None
         return self._get_client(self._active_key_idx)
 
+    # ── OpenRouter client (OpenAI-compatible) ────────────────────
+    def _get_openrouter_client(self):
+        """Get or create an OpenRouter client using the openai library."""
+        if self._openrouter_client is None and settings.OPENROUTER_API_KEY:
+            try:
+                from openai import OpenAI
+                self._openrouter_client = OpenAI(
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=settings.OPENROUTER_API_KEY,
+                )
+                print(f"[ModelRegistry] OpenRouter client created "
+                      f"(key prefix={settings.OPENROUTER_API_KEY[:12]}...)")
+                logger.info("ModelRegistry: OpenRouter client created")
+            except Exception as e:
+                print(f"[ModelRegistry] OpenRouter client creation FAILED: {e}")
+                logger.warning(f"ModelRegistry: OpenRouter client unavailable: {e}")
+        return self._openrouter_client
+
     @property
     def active_model(self) -> str:
         """Return the currently active model name."""
@@ -167,26 +197,42 @@ class ModelRegistry:
         fast: bool = False,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """Call Gemini API with automatic model + key fallback.
+        """Call LLM API with automatic Gemini multi-key + OpenRouter fallback.
 
         Strategy:
-        1. For each API key (starting with active):
-           a. Try each model in the chain
-           b. On quota error -> try next model
-           c. If all models exhausted -> try next key
-        2. On auth error for a key -> skip that key entirely
-        3. Returns empty string only if ALL keys x ALL models fail
-
-        Interview context is NOT lost on key switch — all context is in
-        the prompt itself, so switching keys mid-interview is seamless.
+        Layer 1 — Gemini (free tier, 5 keys × 20 req/day):
+          For each API key → try each model in chain → on quota error, next model/key
+        Layer 2 — OpenRouter (free + ultra-cheap models):
+          If ALL Gemini keys exhausted → try OpenRouter models in order
+        Returns empty string only if ALL providers fail.
         """
-        if not self._api_keys:
-            print(f"[llm_generate] ABORT: No API keys configured — GEMINI_API_KEY missing")
-            logger.error("Gemini error: GEMINI_API_KEY not configured")
-            return ""
-
         if max_tokens is None:
             max_tokens = 512 if fast else 2048
+
+        # ── Layer 1: Gemini ──────────────────────────────────────
+        result = await self._try_gemini(prompt, system, max_tokens)
+        if result:
+            return result
+
+        # ── Layer 2: OpenRouter ──────────────────────────────────
+        if settings.OPENROUTER_API_KEY and self._openrouter_models:
+            print(f"[llm_generate] All Gemini keys exhausted, falling back to OpenRouter")
+            logger.info("All Gemini keys exhausted — falling back to OpenRouter")
+            result = await self._try_openrouter(prompt, system, max_tokens)
+            if result:
+                return result
+
+        print(f"[llm_generate] ALL providers exhausted (Gemini + OpenRouter)")
+        logger.error("All LLM providers exhausted (Gemini + OpenRouter)")
+        return ""
+
+    async def _try_gemini(
+        self, prompt: str, system: str, max_tokens: int
+    ) -> str:
+        """Try all Gemini keys × models. Returns text or empty string."""
+        if not self._api_keys:
+            print(f"[llm_generate] ABORT: No Gemini API keys configured")
+            return ""
 
         # Build key order: active first, then others
         key_order = [self._active_key_idx]
@@ -197,8 +243,8 @@ class ModelRegistry:
         now = time.time()
         last_error = None
 
-        print(f"[llm_generate] {len(self._api_keys)} keys, {len(self._model_chain)} models, "
-              f"prompt_len={len(prompt)}")
+        print(f"[llm_generate] Gemini: {len(self._api_keys)} keys, "
+              f"{len(self._model_chain)} models, prompt_len={len(prompt)}")
 
         for key_idx in key_order:
             # Skip keys on cooldown (unless it's the only one left)
@@ -237,10 +283,9 @@ class ModelRegistry:
                 try:
                     self._api_call_count += 1
                     self._last_call_ts = time.time()
-                    print(f"[llm_generate] Key #{key_idx + 1}, model={model_name}, "
+                    print(f"[llm_generate] Gemini Key #{key_idx + 1}, model={model_name}, "
                           f"max_tokens={max_tokens} (call #{self._api_call_count})")
 
-                    # Build Gemini contents — system instruction merged into prompt
                     contents = system + "\n\n" + prompt if system else prompt
 
                     response = await asyncio.to_thread(
@@ -271,42 +316,118 @@ class ModelRegistry:
                     last_error = e
                     self._last_error = str(e)[:500]
                     self._last_error_type = type(e).__name__
-                    print(f"[llm_generate] EXCEPTION key=#{key_idx + 1} model={model_name}: "
+                    print(f"[llm_generate] EXCEPTION Gemini key=#{key_idx + 1} model={model_name}: "
                           f"{self._last_error_type}: {self._last_error}")
 
                     if self._is_auth_error(e):
                         logger.error(f"Gemini AUTH ERROR key #{key_idx + 1}: {e}")
-                        print(f"[llm_generate] Key #{key_idx + 1} auth failed, skipping to next key")
-                        break  # Break model loop, try next key
+                        break  # Try next key
 
                     elif self._is_quota_error(e) or getattr(e, 'status_code', None) in (403, 429, 503):
-                        logger.warning(f"ModelRegistry: Quota/rate error on key #{key_idx + 1} "
+                        logger.warning(f"Gemini quota/rate error key #{key_idx + 1} "
                                        f"model={model_name}: {e}")
                         self._model_cooldowns[(key_idx, model_name)] = now + self._cooldown_seconds
-                        continue  # Try next model under same key
+                        continue  # Try next model
+
+                    elif "failed_precondition" in str(e).lower() or "not supported" in str(e).lower():
+                        logger.warning(f"Gemini location error key #{key_idx + 1} "
+                                       f"model={model_name}: {e}")
+                        self._model_cooldowns[(key_idx, model_name)] = now + 3600
+                        continue
 
                     else:
                         logger.error(f"Gemini error key #{key_idx + 1} model={model_name}: {e}")
                         continue
 
-            # If all models under this key failed, put key on cooldown
             if all_models_failed:
                 self._key_cooldowns[key_idx] = now + self._cooldown_seconds
-                print(f"[llm_generate] All models exhausted for key #{key_idx + 1}, "
-                      f"cooldown {self._cooldown_seconds}s")
+                print(f"[llm_generate] All Gemini models exhausted for key #{key_idx + 1}")
 
-        # All keys x all models exhausted
-        print(f"[llm_generate] All {len(self._api_keys)} keys x "
-              f"{len(self._model_chain)} models exhausted. Last error: {last_error}")
-        logger.error(f"Gemini error: All keys and models exhausted. Last error: {last_error}")
-        return ""
+        return ""  # All Gemini keys exhausted
+
+    async def _try_openrouter(
+        self, prompt: str, system: str, max_tokens: int
+    ) -> str:
+        """Try OpenRouter models in order. Returns text or empty string."""
+        client = self._get_openrouter_client()
+        if client is None:
+            print(f"[llm_generate] OpenRouter client unavailable")
+            return ""
+
+        now = time.time()
+        # Ensure enough tokens for OpenRouter models (some use thinking tokens)
+        or_max_tokens = max(max_tokens, 1024)
+
+        for model_name in self._openrouter_models:
+            # Skip models on cooldown
+            if now < self._openrouter_cooldowns.get(model_name, 0):
+                continue
+
+            try:
+                self._openrouter_call_count += 1
+                self._last_call_ts = time.time()
+                print(f"[llm_generate] OpenRouter model={model_name}, "
+                      f"max_tokens={or_max_tokens} (OR call #{self._openrouter_call_count})")
+
+                messages = []
+                if system:
+                    messages.append({"role": "system", "content": system})
+                messages.append({"role": "user", "content": prompt})
+
+                response = await asyncio.to_thread(
+                    client.chat.completions.create,
+                    model=model_name,
+                    messages=messages,
+                    max_tokens=or_max_tokens,
+                    temperature=0.7,
+                )
+
+                text = ""
+                if response and response.choices and len(response.choices) > 0:
+                    text = (response.choices[0].message.content or "").strip()
+
+                if not text:
+                    # Model returned empty/None content (e.g. reasoning model
+                    # consumed all tokens on thinking). Try next model.
+                    self._openrouter_call_fail += 1
+                    finish = getattr(response.choices[0], "finish_reason", "unknown") if response and response.choices else "no_choices"
+                    print(f"[llm_generate] OpenRouter model={model_name} returned EMPTY "
+                          f"(finish_reason={finish}), trying next model")
+                    logger.warning(f"OpenRouter empty response model={model_name} "
+                                   f"finish_reason={finish}")
+                    continue
+
+                self._openrouter_call_success += 1
+                print(f"[llm_generate] OpenRouter OK model={model_name} "
+                      f"len={len(text)} (OR success #{self._openrouter_call_success})")
+                return text
+
+            except Exception as e:
+                self._openrouter_call_fail += 1
+                self._last_error = str(e)[:500]
+                self._last_error_type = type(e).__name__
+                print(f"[llm_generate] EXCEPTION OpenRouter model={model_name}: "
+                      f"{self._last_error_type}: {self._last_error}")
+
+                if self._is_quota_error(e):
+                    self._openrouter_cooldowns[model_name] = now + self._cooldown_seconds
+                    logger.warning(f"OpenRouter quota error model={model_name}: {e}")
+                    continue  # Try next model
+                else:
+                    logger.error(f"OpenRouter error model={model_name}: {e}")
+                    continue  # Try next model anyway
+
+        return ""  # All OpenRouter models exhausted
 
     def warm_up(self):
         """Eagerly load all models (call during app startup)."""
         _ = self.embedding_model
         _ = self.gemini_client
-        logger.info(f"ModelRegistry: Model chain = {self._model_chain}, "
-                     f"API keys = {len(self._api_keys)}")
+        if settings.OPENROUTER_API_KEY:
+            _ = self._get_openrouter_client()
+        logger.info(f"ModelRegistry: Gemini chain = {self._model_chain}, "
+                     f"Gemini keys = {len(self._api_keys)}, "
+                     f"OpenRouter models = {self._openrouter_models}")
 
     def get_stats(self) -> dict:
         """Return API call statistics for diagnostics."""
@@ -322,6 +443,11 @@ class ModelRegistry:
             "api_calls_total": self._api_call_count,
             "api_calls_success": self._api_call_success,
             "api_calls_failed": self._api_call_fail,
+            "openrouter_configured": bool(settings.OPENROUTER_API_KEY),
+            "openrouter_models": self._openrouter_models,
+            "openrouter_calls_total": self._openrouter_call_count,
+            "openrouter_calls_success": self._openrouter_call_success,
+            "openrouter_calls_failed": self._openrouter_call_fail,
             "last_call_at": (
                 _dt.datetime.fromtimestamp(self._last_call_ts).isoformat()
                 if self._last_call_ts else None

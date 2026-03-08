@@ -342,7 +342,7 @@ class PracticeModeService:
         alpha = 0.3
         for key in current_metrics:
             old_val = session["live_metrics"].get(key, 50)
-            current_metrics[key] = round(alpha * current_metrics[key] + (1 - alpha) * old_val, 1)
+            current_metrics[key] = round(float(alpha * current_metrics[key] + (1 - alpha) * old_val), 1)
 
         # Update session
         session["live_metrics"] = current_metrics

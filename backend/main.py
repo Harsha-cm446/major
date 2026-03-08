@@ -225,7 +225,7 @@ async def gemini_raw_test():
 
 @app.get("/api/diagnostics/gemini-models")
 async def gemini_models_test():
-    """Try every model in the fallback chain across all keys and report which work."""
+    """Try every model in the fallback chain across ALL keys and report which work."""
     import asyncio, time as _time
     from app.core.config import settings
     from google import genai
@@ -233,7 +233,15 @@ async def gemini_models_test():
     if not settings.GEMINI_API_KEY:
         return {"error": "GEMINI_API_KEY is empty"}
 
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    # Collect all keys
+    all_keys = [settings.GEMINI_API_KEY]
+    if settings.GEMINI_FALLBACK_API_KEYS:
+        for k in settings.GEMINI_FALLBACK_API_KEYS.split(","):
+            k = k.strip()
+            if k and k not in all_keys:
+                all_keys.append(k)
+
+    # Collect all models
     models = [settings.GEMINI_MODEL]
     if settings.GEMINI_FALLBACK_MODELS:
         for m in settings.GEMINI_FALLBACK_MODELS.split(","):
@@ -242,31 +250,111 @@ async def gemini_models_test():
                 models.append(m)
 
     results = {}
+    for ki, api_key in enumerate(all_keys, 1):
+        client = genai.Client(api_key=api_key)
+        for model_name in models:
+            combo = f"K{ki}+{model_name}"
+            t0 = _time.time()
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model_name,
+                    contents="Say hello in one word",
+                    config={"temperature": 0.1, "max_output_tokens": 10},
+                )
+                text = response.text if response and response.text else ""
+                results[combo] = {
+                    "status": "ok" if text else "empty",
+                    "response": text.strip()[:50],
+                    "elapsed": round(_time.time() - t0, 2),
+                }
+            except Exception as e:
+                err = str(e)[:200]
+                status = "quota" if any(m in err.lower() for m in ("429", "resource_exhausted", "quota", "rate limit")) else "error"
+                results[combo] = {
+                    "status": status,
+                    "error": err,
+                    "error_type": type(e).__name__,
+                    "elapsed": round(_time.time() - t0, 2),
+                }
+
+    working = [c for c, r in results.items() if r["status"] == "ok"]
+    return {
+        "keys_tested": len(all_keys),
+        "models_tested": len(models),
+        "combos_tested": len(results),
+        "working": working,
+        "working_count": len(working),
+        "results": results,
+    }
+
+
+@app.get("/api/diagnostics/openrouter")
+async def openrouter_test():
+    """Test OpenRouter API key and each fallback model."""
+    import asyncio
+    import time as _time
+    from app.core.config import settings
+
+    if not settings.OPENROUTER_API_KEY:
+        return {"error": "OPENROUTER_API_KEY is empty"}
+
+    models = []
+    if settings.OPENROUTER_FALLBACK_MODELS:
+        for m in settings.OPENROUTER_FALLBACK_MODELS.split(","):
+            m = m.strip()
+            if m:
+                models.append(m)
+
+    if not models:
+        return {"error": "OPENROUTER_FALLBACK_MODELS is empty"}
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.OPENROUTER_API_KEY,
+        )
+    except Exception as e:
+        return {"error": f"Failed to create OpenRouter client: {e}"}
+
+    results = {}
     for model_name in models:
         t0 = _time.time()
         try:
             response = await asyncio.to_thread(
-                client.models.generate_content,
+                client.chat.completions.create,
                 model=model_name,
-                contents="Say hello in one word",
-                config={"temperature": 0.1, "max_output_tokens": 200},
+                messages=[{"role": "user", "content": "Say hello in one word"}],
+                max_tokens=100,
+                temperature=0.1,
             )
-            text = response.text if response and response.text else ""
+            text = ""
+            if response and response.choices and len(response.choices) > 0:
+                text = (response.choices[0].message.content or "").strip()
             results[model_name] = {
                 "status": "ok" if text else "empty",
-                "response": text,
+                "response": text.strip()[:50],
                 "elapsed": round(_time.time() - t0, 2),
             }
         except Exception as e:
+            err = str(e)[:200]
             results[model_name] = {
                 "status": "error",
-                "error": str(e)[:200],
+                "error": err,
                 "error_type": type(e).__name__,
                 "elapsed": round(_time.time() - t0, 2),
             }
 
     working = [m for m, r in results.items() if r["status"] == "ok"]
-    return {"models_tested": len(models), "working": working, "results": results}
+    return {
+        "openrouter_key_set": True,
+        "models_tested": len(models),
+        "working": working,
+        "working_count": len(working),
+        "results": results,
+    }
+
 
 @app.get("/api/diagnostics/proctoring")
 async def proctoring_diagnostics():

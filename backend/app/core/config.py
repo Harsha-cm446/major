@@ -41,7 +41,11 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GEMINI_FALLBACK_API_KEYS: str = ""  # comma-separated extra keys from different accounts
     GEMINI_MODEL: str = "gemini-2.5-flash"
-    GEMINI_FALLBACK_MODELS: str = "gemini-3-flash-preview,gemini-3.1-flash-lite-preview,gemini-2.5-flash-lite,gemini-3.1-pro-preview,gemini-2.5-pro"
+    GEMINI_FALLBACK_MODELS: str = ""  # empty = only primary model (dead models removed)
+
+    # OpenRouter API (fallback when all Gemini keys exhausted)
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_FALLBACK_MODELS: str = "google/gemini-2.0-flash-lite-001,google/gemini-2.0-flash-001,google/gemini-2.5-flash-lite,google/gemini-2.5-flash"
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"
