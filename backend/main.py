@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
-from app.routers import auth, interviews, mock_interview, websocket, candidate_interview, practice_mode, analytics, data_collection, stt_websocket
+from app.routers import auth, interviews, mock_interview, websocket, candidate_interview, practice_mode, analytics, data_collection, stt_websocket, gpu_admin
 from app.services.ai_service import ai_service
 
 
@@ -40,6 +40,13 @@ async def lifespan(app: FastAPI):
         import os
         all_env_keys = [k for k in os.environ if 'GEMINI' in k.upper()]
         print(f"   Environment vars containing 'GEMINI': {all_env_keys}")
+
+    # vLLM fallback status
+    if settings.VLLM_ENABLED:
+        print(f"🖥️  vLLM GPU fallback: ENABLED via Modal (endpoint={settings.VLLM_ENDPOINT}, "
+              f"model={settings.VLLM_MODEL})")
+    else:
+        print(f"ℹ️  vLLM GPU fallback: disabled (deploy modal_vllm.py and set VLLM_ENABLED=true)")
 
 
     # Pre-download and cache the Vosk STT model at startup
@@ -109,6 +116,7 @@ app.include_router(practice_mode.router)
 app.include_router(analytics.router)
 app.include_router(data_collection.router)
 app.include_router(stt_websocket.router)
+app.include_router(gpu_admin.router)
 
 
 # ── Health check ──────────────────────────────────────

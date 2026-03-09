@@ -2,9 +2,10 @@
 Shared model registry — provides singleton instances of heavy ML models
 to prevent duplicate loading across services.
 
-Includes Gemini multi-key fallback + OpenRouter overflow:
-  Layer 1: gemini-2.5-flash across 5 Google API keys (100 req/day free)
+Includes Gemini multi-key fallback + OpenRouter overflow + vLLM self-hosted GPU:
+  Layer 1: gemini-2.5-flash across 4 Google API keys (round-robin distribution)
   Layer 2: OpenRouter free models (nemotron-3-nano-30b, step-3.5-flash, mistral-small-3.1, llama-3.3-70b)
+  Layer 3: vLLM self-hosted on Modal GPU (auto scale-to-zero)
 
 Usage:
     from app.services.model_registry import model_registry
@@ -27,9 +28,10 @@ logger = logging.getLogger(__name__)
 class ModelRegistry:
     """Lazy-loading singleton registry for shared ML models.
 
-    Gemini multi-key fallback + OpenRouter overflow:
-    - Layer 1: Try gemini-2.5-flash across all Google API keys
+    Gemini multi-key fallback + OpenRouter overflow + vLLM self-hosted GPU:
+    - Layer 1: Try gemini-2.5-flash across all Google API keys (round-robin)
     - Layer 2: If ALL Gemini keys exhausted, fall back to OpenRouter free models
+    - Layer 3: If OpenRouter exhausted, fall back to vLLM on Modal GPU (auto-scales)
     - Interview context is preserved across switches (stateless API calls)
     """
 
@@ -44,7 +46,11 @@ class ModelRegistry:
         self._embedding_model = None
         self._gemini_clients: List = []  # List of genai.Client instances
         self._openrouter_client = None   # OpenAI-compatible client for OpenRouter
+        self._vllm_client = None         # OpenAI-compatible client for vLLM
         self._active_key_idx = 0
+
+        # Round-robin counter for distributing requests across Gemini keys
+        self._request_counter = 0
 
         # API call tracking
         self._api_call_count = 0
@@ -58,6 +64,12 @@ class ModelRegistry:
         self._openrouter_call_count = 0
         self._openrouter_call_success = 0
         self._openrouter_call_fail = 0
+
+        # vLLM call tracking
+        self._vllm_call_count = 0
+        self._vllm_call_success = 0
+        self._vllm_call_fail = 0
+        self._vllm_last_request_ts: Optional[float] = None
 
         # Build ordered Gemini model list: primary first, then fallbacks
         self._model_chain = [settings.GEMINI_MODEL]
@@ -158,6 +170,26 @@ class ModelRegistry:
         """Return the currently active model name."""
         return self._model_chain[self._active_model_idx]
 
+    # ── vLLM client (OpenAI-compatible, Modal GPU) ────────────
+    def _get_vllm_client(self):
+        """Get or create a vLLM client using the openai library."""
+        if self._vllm_client is None and settings.VLLM_ENDPOINT:
+            try:
+                from openai import OpenAI
+                self._vllm_client = OpenAI(
+                    base_url=settings.VLLM_ENDPOINT,
+                    api_key="not-needed",
+                    timeout=180.0,  # Modal cold start can take 30-60s + generation
+                )
+                print(f"[ModelRegistry] vLLM client created "
+                      f"(endpoint={settings.VLLM_ENDPOINT})")
+                logger.info(f"ModelRegistry: vLLM client created "
+                            f"(endpoint={settings.VLLM_ENDPOINT})")
+            except Exception as e:
+                print(f"[ModelRegistry] vLLM client creation FAILED: {e}")
+                logger.warning(f"ModelRegistry: vLLM client unavailable: {e}")
+        return self._vllm_client
+
     @property
     def active_key_index(self) -> int:
         """Return the index of the currently active API key (1-based for display)."""
@@ -197,13 +229,15 @@ class ModelRegistry:
         fast: bool = False,
         max_tokens: Optional[int] = None,
     ) -> str:
-        """Call LLM API with automatic Gemini multi-key + OpenRouter fallback.
+        """Call LLM API with automatic Gemini multi-key + OpenRouter + vLLM fallback.
 
         Strategy:
-        Layer 1 — Gemini (free tier, 5 keys × 20 req/day):
-          For each API key → try each model in chain → on quota error, next model/key
-        Layer 2 — OpenRouter (free + ultra-cheap models):
+        Layer 1 — Gemini (free tier, 4 keys × round-robin distribution):
+          Distribute requests evenly across keys to avoid stampede
+        Layer 2 — OpenRouter (free models):
           If ALL Gemini keys exhausted → try OpenRouter models in order
+        Layer 3 — vLLM self-hosted GPU (Azure Container App):
+          If OpenRouter exhausted → try vLLM (auto-starts container if needed)
         Returns empty string only if ALL providers fail.
         """
         if max_tokens is None:
@@ -222,8 +256,16 @@ class ModelRegistry:
             if result:
                 return result
 
-        print(f"[llm_generate] ALL providers exhausted (Gemini + OpenRouter)")
-        logger.error("All LLM providers exhausted (Gemini + OpenRouter)")
+        # ── Layer 3: vLLM on Modal GPU (auto scale-to-zero) ────
+        if settings.VLLM_ENABLED and settings.VLLM_ENDPOINT:
+            print(f"[llm_generate] OpenRouter exhausted, falling back to vLLM (Modal)")
+            logger.info("OpenRouter exhausted — falling back to vLLM on Modal GPU")
+            result = await self._try_vllm(prompt, system, max_tokens)
+            if result:
+                return result
+
+        print(f"[llm_generate] ALL providers exhausted (Gemini + OpenRouter + vLLM)")
+        logger.error("All LLM providers exhausted (Gemini + OpenRouter + vLLM)")
         return ""
 
     async def _try_gemini(
@@ -234,11 +276,14 @@ class ModelRegistry:
             print(f"[llm_generate] ABORT: No Gemini API keys configured")
             return ""
 
-        # Build key order: active first, then others
-        key_order = [self._active_key_idx]
+        # Round-robin: distribute requests across keys to prevent stampede
+        self._request_counter += 1
+        start_key = self._request_counter % len(self._api_keys)
+
+        # Build key order: round-robin start, then wrap around
+        key_order = []
         for i in range(len(self._api_keys)):
-            if i not in key_order:
-                key_order.append(i)
+            key_order.append((start_key + i) % len(self._api_keys))
 
         now = time.time()
         last_error = None
@@ -419,15 +464,76 @@ class ModelRegistry:
 
         return ""  # All OpenRouter models exhausted
 
+    async def _try_vllm(
+        self, prompt: str, system: str, max_tokens: int
+    ) -> str:
+        """Try vLLM on Modal GPU. Returns text or empty string.
+
+        Modal handles scale-to-zero natively. If the container is cold,
+        the first request triggers a warm-up (~30-60s). The OpenAI client
+        timeout is set to 180s to accommodate this.
+        """
+        client = self._get_vllm_client()
+        if client is None:
+            print(f"[llm_generate] vLLM client unavailable")
+            return ""
+
+        try:
+            self._vllm_call_count += 1
+            self._last_call_ts = time.time()
+            print(f"[llm_generate] vLLM model={settings.VLLM_MODEL}, "
+                  f"max_tokens={max_tokens} (vLLM call #{self._vllm_call_count})")
+
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
+
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=settings.VLLM_MODEL,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.7,
+            )
+
+            text = ""
+            if response and response.choices and len(response.choices) > 0:
+                text = (response.choices[0].message.content or "").strip()
+
+            if not text:
+                self._vllm_call_fail += 1
+                finish = getattr(response.choices[0], "finish_reason", "unknown") if response and response.choices else "no_choices"
+                print(f"[llm_generate] vLLM returned EMPTY (finish_reason={finish})")
+                logger.warning(f"vLLM empty response finish_reason={finish}")
+                return ""
+
+            self._vllm_call_success += 1
+            self._vllm_last_request_ts = time.time()
+            print(f"[llm_generate] vLLM OK model={settings.VLLM_MODEL} "
+                  f"len={len(text)} (vLLM success #{self._vllm_call_success})")
+            return text
+
+        except Exception as e:
+            self._vllm_call_fail += 1
+            self._last_error = str(e)[:500]
+            self._last_error_type = type(e).__name__
+            print(f"[llm_generate] EXCEPTION vLLM: {self._last_error_type}: {self._last_error}")
+            logger.error(f"vLLM error: {e}")
+            return ""
+
     def warm_up(self):
         """Eagerly load all models (call during app startup)."""
         _ = self.embedding_model
         _ = self.gemini_client
         if settings.OPENROUTER_API_KEY:
             _ = self._get_openrouter_client()
+        if settings.VLLM_ENABLED and settings.VLLM_ENDPOINT:
+            _ = self._get_vllm_client()
         logger.info(f"ModelRegistry: Gemini chain = {self._model_chain}, "
                      f"Gemini keys = {len(self._api_keys)}, "
-                     f"OpenRouter models = {self._openrouter_models}")
+                     f"OpenRouter models = {self._openrouter_models}, "
+                     f"vLLM enabled = {settings.VLLM_ENABLED}")
 
     def get_stats(self) -> dict:
         """Return API call statistics for diagnostics."""
@@ -448,6 +554,12 @@ class ModelRegistry:
             "openrouter_calls_total": self._openrouter_call_count,
             "openrouter_calls_success": self._openrouter_call_success,
             "openrouter_calls_failed": self._openrouter_call_fail,
+            "vllm_enabled": settings.VLLM_ENABLED,
+            "vllm_endpoint": settings.VLLM_ENDPOINT or None,
+            "vllm_model": settings.VLLM_MODEL,
+            "vllm_calls_total": self._vllm_call_count,
+            "vllm_calls_success": self._vllm_call_success,
+            "vllm_calls_failed": self._vllm_call_fail,
             "last_call_at": (
                 _dt.datetime.fromtimestamp(self._last_call_ts).isoformat()
                 if self._last_call_ts else None

@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { interviewAPI } from '../services/api';
-import { Plus, Users, Calendar, Trash2, Clock, ArrowRight, Briefcase, LogOut, Loader2 } from 'lucide-react';
+import { interviewAPI, gpuAPI } from '../services/api';
+import { Plus, Users, Calendar, Trash2, Clock, ArrowRight, Briefcase, LogOut, Loader2, Server, Activity } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function HRDashboard() {
@@ -10,6 +10,10 @@ export default function HRDashboard() {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [endingSessionId, setEndingSessionId] = useState(null);
+
+  // GPU/vLLM state (Modal auto-managed)
+  const [gpuStatus, setGpuStatus] = useState(null);
+  const [gpuLoading, setGpuLoading] = useState(false);
 
   const load = () => {
     interviewAPI.listSessions()
@@ -44,6 +48,26 @@ export default function HRDashboard() {
       setEndingSessionId(null);
     }
   };
+
+  // ── GPU Server Controls ──
+  const loadGpuStatus = useCallback(async () => {
+    try {
+      setGpuLoading(true);
+      const r = await gpuAPI.getStatus();
+      setGpuStatus(r.data);
+    } catch {
+      // GPU admin not configured — hide panel
+      setGpuStatus(null);
+    } finally {
+      setGpuLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadGpuStatus();
+    const interval = setInterval(loadGpuStatus, 15000); // Poll every 15s
+    return () => clearInterval(interval);
+  }, [loadGpuStatus]);
 
   const statusStyle = (status) => {
     switch (status) {
@@ -89,6 +113,79 @@ export default function HRDashboard() {
           </div>
         ))}
       </div>
+
+      {/* GPU / vLLM Panel (Modal auto-managed) */}
+      {gpuStatus && gpuStatus.container?.vllm_enabled && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 mb-10">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-violet-100 flex items-center justify-center">
+                <Server className="text-violet-600" size={20} />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900">AI Backup Server (GPU)</h3>
+                <p className="text-xs text-gray-500">vLLM · {gpuStatus.container?.vllm_model || 'Qwen2.5-14B'} · Modal</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              {/* Status indicator */}
+              <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full ${
+                gpuStatus.container?.status === 'running'
+                  ? 'bg-green-100 text-green-700'
+                  : gpuStatus.container?.status === 'sleeping'
+                  ? 'bg-amber-100 text-amber-700'
+                  : 'bg-gray-100 text-gray-600'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  gpuStatus.container?.status === 'running'
+                    ? 'bg-green-500 animate-pulse'
+                    : gpuStatus.container?.status === 'sleeping'
+                    ? 'bg-amber-400'
+                    : 'bg-gray-400'
+                }`} />
+                {gpuStatus.container?.status === 'running'
+                  ? 'Running'
+                  : gpuStatus.container?.status === 'sleeping'
+                  ? 'Sleeping (auto-wakes on request)'
+                  : 'Not configured'}
+              </span>
+              {/* Auto-managed badge */}
+              <span className="inline-flex items-center gap-1 text-xs text-violet-600 bg-violet-50 px-2.5 py-1 rounded-full font-medium">
+                <Activity size={12} />
+                Auto-managed
+              </span>
+            </div>
+          </div>
+
+          {/* LLM Stats */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-gray-100">
+            <div className="text-center">
+              <p className="text-lg font-bold text-gray-900">
+                {(gpuStatus.llm_stats?.api_calls_success || 0) + (gpuStatus.llm_stats?.openrouter_calls_success || 0) + (gpuStatus.llm_stats?.vllm_calls_success || 0)}
+              </p>
+              <p className="text-xs text-gray-500">Total LLM Calls</p>
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-bold text-blue-600">{gpuStatus.llm_stats?.api_calls_success || 0}</p>
+              <p className="text-xs text-gray-500">Gemini</p>
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-bold text-purple-600">{gpuStatus.llm_stats?.openrouter_calls_success || 0}</p>
+              <p className="text-xs text-gray-500">OpenRouter</p>
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-bold text-violet-600">{gpuStatus.llm_stats?.vllm_calls_success || 0}</p>
+              <p className="text-xs text-gray-500">vLLM GPU</p>
+            </div>
+          </div>
+
+          {/* Info footer */}
+          <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-50 text-xs text-gray-400">
+            <span>Scale-to-zero · $0 when idle · ~30-60s cold start</span>
+            <span>Cost: ~$0.59/hr (only while serving)</span>
+          </div>
+        </div>
+      )}
 
       {/* Sessions list */}
       {loading ? (

@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_FALLBACK_MODELS: str = "nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free,mistralai/mistral-small-3.1-24b-instruct:free,meta-llama/llama-3.3-70b-instruct:free"
 
+    # vLLM self-hosted fallback (Modal GPU — auto scale-to-zero)
+    # Deploy with: modal deploy modal_vllm.py
+    # Then set VLLM_ENDPOINT to the URL Modal gives you + /v1
+    VLLM_ENDPOINT: str = ""  # e.g. https://username--vllm-interview-serve.modal.run/v1
+    VLLM_MODEL: str = "Qwen/Qwen2.5-7B-Instruct-AWQ"
+    VLLM_ENABLED: bool = False  # set True after deploying modal_vllm.py
+
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"
     # Public URL for emails/links (set to your machine's IP or ngrok URL)

@@ -134,4 +134,10 @@ export const candidateAPI = {
   getIntegrityReport: (token) => api.get(`/candidate-interview/${token}/proctoring/integrity-report`),
 };
 
+// ── GPU/vLLM Status (Modal auto-managed) ───────────────
+export const gpuAPI = {
+  getStatus: () => api.get('/admin/gpu/status'),
+  healthCheck: () => api.get('/admin/gpu/health'),
+};
+
 export default api;
