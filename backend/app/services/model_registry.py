@@ -400,8 +400,12 @@ class ModelRegistry:
             return ""
 
         now = time.time()
-        # Ensure enough tokens for OpenRouter models (some use thinking tokens)
-        or_max_tokens = max(max_tokens, 1024)
+        # Reasoning models (nemotron, step-flash) consume output tokens on
+        # internal "thinking" before producing content.  If max_tokens is too
+        # low the thinking fills the budget and content comes back empty,
+        # which makes us skip the model and fall through to vLLM.
+        # Use a generous budget so the response always has room.
+        or_max_tokens = max(max_tokens, 4096)
 
         for model_name in self._openrouter_models:
             # Skip models on cooldown

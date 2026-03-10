@@ -45,7 +45,7 @@ class Settings(BaseSettings):
 
     # OpenRouter API (fallback when all Gemini keys exhausted)
     OPENROUTER_API_KEY: str = ""
-    OPENROUTER_FALLBACK_MODELS: str = "nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free,mistralai/mistral-small-3.1-24b-instruct:free,meta-llama/llama-3.3-70b-instruct:free"
+    OPENROUTER_FALLBACK_MODELS: str = "meta-llama/llama-3.3-70b-instruct:free,mistralai/mistral-small-3.1-24b-instruct:free,nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free"
 
     # vLLM self-hosted fallback (Modal GPU — auto scale-to-zero)
     # Deploy with: modal deploy modal_vllm.py
