@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import {
   Mic, MicOff, Camera, Send, Loader2, User, Briefcase, Clock,
   CheckCircle, Volume2, VolumeX, Timer, AlertTriangle, XCircle, Code,
-  Monitor, Shield, UserX, MonitorX, Eye, LogOut,
+  Monitor, Shield, UserX, MonitorX, Eye, LogOut, Maximize2, Minimize2,
 } from 'lucide-react';
 
 const ICE_SERVERS = [
@@ -160,6 +160,38 @@ export default function CandidateJoin() {
 
   // Keep answerRef in sync with answer state
   useEffect(() => { answerRef.current = answer; }, [answer]);
+
+  // ── Fullscreen management ─────────────────────────
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Sync state when Esc key or other browser action exits fullscreen
+  useEffect(() => {
+    const onFSChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFSChange);
+    return () => document.removeEventListener('fullscreenchange', onFSChange);
+  }, []);
+
+  // Auto-enter fullscreen when interview starts, exit when it ends
+  useEffect(() => {
+    if (phase === 'interview') {
+      const el = document.documentElement;
+      if (!document.fullscreenElement && el.requestFullscreen) {
+        el.requestFullscreen().catch(() => {});
+      }
+    } else if (['done', 'failed', 'session_ended', 'error'].includes(phase)) {
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  }, [phase]);
+
+  const toggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  }, []);
 
   // ── TTS: Speak question, then auto-start listening ──
   const speakQuestion = useCallback((text) => {
@@ -1619,6 +1651,15 @@ export default function CandidateJoin() {
               <User size={16} />
               <span>{candidateName}</span>
             </div>
+
+            {/* Fullscreen toggle */}
+            <button
+              onClick={toggleFullscreen}
+              className="p-2 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 transition"
+              title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            >
+              {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            </button>
 
             {/* End Interview */}
             <button

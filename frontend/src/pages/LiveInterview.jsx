@@ -6,7 +6,7 @@ import {
   Loader2, Users, Eye, ArrowLeft, RefreshCw, BarChart3,
   CheckCircle, Clock, AlertTriangle, FileText, XCircle, Timer,
   Video, VideoOff, Monitor, X, Shield, UserX, MonitorX, Copy, LogOut,
-  ChevronLeft, ChevronRight, LayoutGrid, Maximize2,
+  ChevronLeft, ChevronRight, LayoutGrid, Maximize2, Minimize2,
 } from 'lucide-react';
 
 const ICE_SERVERS = [
@@ -155,6 +155,25 @@ export default function LiveInterview() {
   const [galleryStreams, setGalleryStreams] = useState({}); // token -> { camera: MediaStream|null, screen: MediaStream|null, name }
   const galleryVideoRefs = useRef({}); // token -> video element ref
   const [enlargedCandidate, setEnlargedCandidate] = useState(null); // token of enlarged candidate
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const enlargedModalRef = useRef(null);
+
+  // Sync isFullscreen state with browser fullscreen changes (e.g. user presses Esc)
+  useEffect(() => {
+    const onFSChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFSChange);
+    return () => document.removeEventListener('fullscreenchange', onFSChange);
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    const el = enlargedModalRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) {
+      el.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  }, []);
 
   const loadData = async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
@@ -1828,28 +1847,43 @@ export default function LiveInterview() {
               const gs = galleryStreams[enlargedCandidate];
               const candidateName = gs.name || enlargedCandidate;
               return (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={() => setEnlargedCandidate(null)}>
-                  <div className="relative w-full max-w-5xl mx-4" onClick={e => e.stopPropagation()}>
-                    {/* Close button */}
-                    <button
-                      onClick={() => setEnlargedCandidate(null)}
-                      className="absolute -top-12 right-0 p-2 bg-white/10 hover:bg-white/20 rounded-full transition z-10"
-                    >
-                      <X size={24} className="text-white" />
-                    </button>
-
-                    {/* Candidate name */}
-                    <div className="text-center mb-4">
-                      <h3 className="text-white text-lg font-bold">{candidateName}</h3>
-                      <span className="text-gray-300 text-sm">Live Interview Feed</span>
+                <div
+                  ref={enlargedModalRef}
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+                  onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setEnlargedCandidate(null); }}
+                >
+                  <div className={`relative w-full mx-4 ${isFullscreen ? 'max-w-full h-full flex flex-col justify-center' : 'max-w-5xl'}`} onClick={e => e.stopPropagation()}>
+                    {/* Toolbar */}
+                    <div className={`flex items-center justify-between ${isFullscreen ? 'px-6 py-3' : 'mb-4'}`}>
+                      <div className={isFullscreen ? '' : 'flex-1 text-center'}>
+                        <h3 className="text-white text-lg font-bold">{candidateName}</h3>
+                        <span className="text-gray-300 text-sm">Live Interview Feed</span>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        {/* Fullscreen toggle */}
+                        <button
+                          onClick={toggleFullscreen}
+                          className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition"
+                          title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                        >
+                          {isFullscreen ? <Minimize2 size={20} className="text-white" /> : <Maximize2 size={20} className="text-white" />}
+                        </button>
+                        {/* Close button */}
+                        <button
+                          onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setEnlargedCandidate(null); }}
+                          className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition"
+                        >
+                          <X size={20} className="text-white" />
+                        </button>
+                      </div>
                     </div>
 
                     {/* Camera + Screen side by side */}
-                    <div className="grid md:grid-cols-2 gap-2">
-                      <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: '16/9' }}>
+                    <div className={`grid md:grid-cols-2 gap-2 ${isFullscreen ? 'flex-1 px-6 pb-6' : ''}`}>
+                      <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: isFullscreen ? undefined : '16/9', height: isFullscreen ? '100%' : undefined }}>
                         <EnlargedVideo stream={gs.camera} label="Camera" icon={<Video size={14} />} objectFit="object-cover" />
                       </div>
-                      <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: '16/9' }}>
+                      <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: isFullscreen ? undefined : '16/9', height: isFullscreen ? '100%' : undefined }}>
                         <EnlargedVideo stream={gs.screen} label="Screen" icon={<Monitor size={14} />} objectFit="object-contain" />
                       </div>
                     </div>
