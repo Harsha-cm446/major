@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.database import get_database
 from app.core.security import get_hr_user
+from app.routers.websocket import manager as ws_manager
 from app.models.schemas import (
     InterviewSessionCreate,
     InterviewSessionResponse,
@@ -168,6 +169,12 @@ async def end_session(session_id: str, hr_user: dict = Depends(get_hr_user)):
                 {"_id": candidate["_id"]},
                 {"$set": {"status": "completed"}},
             )
+
+    # Broadcast session_ended to all WebSocket connections in this room
+    await ws_manager.broadcast(session_id, {
+        "type": "session_ended",
+        "message": "HR has ended the interview session",
+    })
 
     return {"detail": "Session ended", "candidates_ended": ended_count}
 

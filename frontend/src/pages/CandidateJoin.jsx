@@ -50,7 +50,7 @@ const ICE_SERVERS = [
 
 export default function CandidateJoin() {
   const { token } = useParams();
-  const [phase, setPhase] = useState('loading'); // loading | welcome | face_registration | interview | round_transition | done | failed | error
+  const [phase, setPhase] = useState('loading'); // loading | welcome | face_registration | interview | round_transition | done | failed | session_ended | error
   const [info, setInfo] = useState(null);
   const [candidateName, setCandidateName] = useState('');
   const [sessionId, setSessionId] = useState(null);
@@ -922,6 +922,11 @@ export default function CandidateJoin() {
           }
         }
         break;
+      case 'session_ended':
+        // HR ended the session — stop everything and show message
+        console.log('[Candidate] Session ended by HR');
+        setPhase('session_ended');
+        break;
       default:
         break;
     }
@@ -1459,6 +1464,26 @@ export default function CandidateJoin() {
             </p>
             <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800">
               Your responses have been recorded and will be reviewed by the hiring team.
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Session Ended by HR ───────────────────────────
+  if (phase === 'session_ended') {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+        <div className="max-w-lg w-full">
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-100 p-12 text-center">
+            <LogOut size={64} className="mx-auto text-orange-500 mb-4" />
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">Session Ended</h1>
+            <p className="text-gray-600 mb-6">
+              The interviewer has ended this interview session. Your responses have been recorded.
+            </p>
+            <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 text-sm text-orange-800">
+              Thank you for participating. The hiring team will review your interview.
             </div>
           </div>
         </div>

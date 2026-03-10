@@ -139,7 +139,8 @@ export default function LiveInterview() {
   // ── Gallery View State ──────────────────────────────
   const [galleryPage, setGalleryPage] = useState(0);
   const GALLERY_PAGE_SIZE = 10;
-  const galleryPeersRef = useRef({}); // token -> { pc, cameraStream, screenStream }
+  const galleryPeersRef = useRef({}); // token -> { pc, name }
+  const galleryICEQueueRef = useRef({}); // token -> [candidates] — queued ICE before PC exists
   const [galleryStreams, setGalleryStreams] = useState({}); // token -> { camera: MediaStream|null, screen: MediaStream|null, name }
   const galleryVideoRefs = useRef({}); // token -> video element ref
   const [enlargedCandidate, setEnlargedCandidate] = useState(null); // token of enlarged candidate
@@ -269,12 +270,24 @@ export default function LiveInterview() {
         // On (re)connect the backend sends participants + persisted stream_status
         if (data.stream_status) {
           applyStreamStatus(data.stream_status);
+          // Pre-populate galleryPeersRef so incoming offers are routed to gallery
+          Object.entries(data.stream_status).forEach(([connId, info]) => {
+            if ((info.has_camera || info.has_screen) && !galleryPeersRef.current[connId]) {
+              galleryPeersRef.current[connId] = { pc: null, name: info.name || connId };
+            }
+          });
         }
         break;
       case 'all_stream_status':
         // Response to request_all_streams — bulk update
         if (data.streams) {
           applyStreamStatus(data.streams);
+          // Pre-populate galleryPeersRef so incoming offers are routed to gallery
+          Object.entries(data.streams).forEach(([connId, info]) => {
+            if ((info.has_camera || info.has_screen) && !galleryPeersRef.current[connId]) {
+              galleryPeersRef.current[connId] = { pc: null, name: info.name || connId };
+            }
+          });
         }
         break;
       case 'stream_ready':
@@ -360,9 +373,22 @@ export default function LiveInterview() {
       case 'webrtc_offer':
         console.log('[HR WS] Got WebRTC offer from:', data.from);
         if (galleryPeersRef.current[data.from] !== undefined) {
+          // Already registered as gallery peer
           handleGalleryOffer(data).catch(e => console.error('[Gallery Offer] Error:', e));
         } else {
-          handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer] Error:', e));
+          // Check if this is a candidate we're watching in single-view
+          setWatchingCandidate((currentWatching) => {
+            if (currentWatching === data.from) {
+              // Route to single-view handler
+              handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer] Error:', e));
+            } else {
+              // Unknown candidate — auto-register as gallery peer so all streams appear
+              console.log('[HR WS] Auto-routing unknown offer to gallery:', data.from);
+              galleryPeersRef.current[data.from] = { pc: null, name: data.from };
+              handleGalleryOffer(data).catch(e => console.error('[Gallery Offer] Error:', e));
+            }
+            return currentWatching;
+          });
         }
         break;
       case 'ice_candidate':
@@ -371,6 +397,10 @@ export default function LiveInterview() {
         } else {
           handleICECandidate(data).catch(e => console.error('[ICE] Error:', e));
         }
+        break;
+      case 'session_ended':
+        // Session ended — refresh data to show updated statuses
+        loadData();
         break;
       default:
         break;
@@ -584,15 +614,6 @@ export default function LiveInterview() {
   }, []);
 
   // ── Gallery Multi-Stream Functions ──────────────────
-  const requestGalleryStream = useCallback((candidateToken, candidateName) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    // Mark as pending (so we route the offer to gallery handler)
-    galleryPeersRef.current[candidateToken] = { pc: null, name: candidateName };
-    wsRef.current.send(JSON.stringify({
-      type: 'request_stream',
-      target: candidateToken,
-    }));
-  }, []);
 
   const handleGalleryOffer = useCallback(async (data) => {
     const token = data.from;
@@ -609,6 +630,10 @@ export default function LiveInterview() {
     });
     const candidateName = existing?.name || token;
     galleryPeersRef.current[token] = { pc, name: candidateName };
+
+    // Flush any ICE candidates that arrived before this PC was created
+    const queued = galleryICEQueueRef.current[token] || [];
+    galleryICEQueueRef.current[token] = [];
 
     const assignedStreams = new Map();
     let cameraAssigned = false;
@@ -693,6 +718,16 @@ export default function LiveInterview() {
     };
 
     await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+
+    // Now that remote description is set, flush queued ICE candidates
+    for (const candidate of queued) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error('[Gallery ICE] Error adding queued candidate:', err);
+      }
+    }
+
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
@@ -706,11 +741,21 @@ export default function LiveInterview() {
   const handleGalleryICE = useCallback(async (data) => {
     const pc = galleryPeersRef.current[data.from]?.pc;
     if (pc && data.candidate) {
+      // If remote description isn't set yet, queue the candidate
+      if (!pc.remoteDescription) {
+        if (!galleryICEQueueRef.current[data.from]) galleryICEQueueRef.current[data.from] = [];
+        galleryICEQueueRef.current[data.from].push(data.candidate);
+        return;
+      }
       try {
         await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
       } catch (err) {
         console.error('[Gallery ICE] Error:', err);
       }
+    } else if (data.candidate) {
+      // PC doesn't exist yet — queue it
+      if (!galleryICEQueueRef.current[data.from]) galleryICEQueueRef.current[data.from] = [];
+      galleryICEQueueRef.current[data.from].push(data.candidate);
     }
   }, []);
 
@@ -720,6 +765,7 @@ export default function LiveInterview() {
       entry.pc.close();
     }
     delete galleryPeersRef.current[token];
+    delete galleryICEQueueRef.current[token];
     setGalleryStreams(prev => {
       const next = { ...prev };
       delete next[token];
@@ -732,37 +778,31 @@ export default function LiveInterview() {
       galleryPeersRef.current[token]?.pc?.close();
     });
     galleryPeersRef.current = {};
+    galleryICEQueueRef.current = {};
     setGalleryStreams({});
   }, []);
 
-  // Request streams for all in-progress streamable candidates on the current gallery page
-  const requestGalleryStreamsForPage = useCallback((page) => {
-    const inProgressTokens = candidates
-      .filter(c => c.status === 'in_progress' && streamableCandidates[c.candidate_token])
-      .map(c => c.candidate_token);
-    const start = page * GALLERY_PAGE_SIZE;
-    const pageTokens = inProgressTokens.slice(start, start + GALLERY_PAGE_SIZE);
-
-    // Clean up peers not on this page
-    Object.keys(galleryPeersRef.current).forEach(token => {
-      if (!pageTokens.includes(token)) {
-        cleanupGalleryPeer(token);
+  // Ensure all streamable candidates have gallery peer connections
+  const ensureAllGalleryConnections = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    // Get all streamable candidate tokens
+    Object.entries(streamableCandidates).forEach(([token, info]) => {
+      if (!info.has_camera && !info.has_screen) return;
+      const entry = galleryPeersRef.current[token];
+      const needsConnect = !entry || !entry.pc || entry.pc.connectionState === 'failed' || entry.pc.connectionState === 'closed';
+      if (needsConnect) {
+        const name = info.name || token;
+        galleryPeersRef.current[token] = { pc: null, name };
+        wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
       }
     });
+  }, [streamableCandidates]);
 
-    // Request streams for new candidates on this page
-    pageTokens.forEach(token => {
-      if (!galleryPeersRef.current[token]?.pc) {
-        const name = streamableCandidates[token]?.name || candidates.find(c => c.candidate_token === token)?.candidate_name || token;
-        requestGalleryStream(token, name);
-      }
-    });
-  }, [candidates, streamableCandidates, cleanupGalleryPeer, requestGalleryStream]);
-
-  // ── Periodic gallery health check: detect and retry dead gallery peer connections ──
+  // ── Periodic gallery health check: detect dead peers and ensure all candidates connected ──
   useEffect(() => {
     if (activeTab !== 'gallery') return;
     const healthCheck = setInterval(() => {
+      // Clean up dead peers
       const peers = galleryPeersRef.current;
       Object.entries(peers).forEach(([token, entry]) => {
         if (!entry?.pc) return;
@@ -770,16 +810,13 @@ export default function LiveInterview() {
         if (state === 'failed' || state === 'closed') {
           console.log('[Gallery Health] Dead peer detected:', token, state);
           cleanupGalleryPeer(token);
-          // Re-request if candidate is still streamable
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            galleryPeersRef.current[token] = { pc: null, name: entry.name || token };
-            wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
-          }
         }
       });
+      // Ensure all streamable candidates have connections
+      ensureAllGalleryConnections();
     }, 8000);
     return () => clearInterval(healthCheck);
-  }, [activeTab, cleanupGalleryPeer]);
+  }, [activeTab, cleanupGalleryPeer, ensureAllGalleryConnections]);
 
   const viewReport = async (candidateToken) => {
     setReportLoading(true);
@@ -1176,7 +1213,7 @@ export default function LiveInterview() {
         <Eye size={20} className="text-blue-600 flex-shrink-0 mt-0.5" />
         <div className="text-sm text-blue-800">
           <p className="font-semibold mb-1">AI is conducting two-round interviews</p>
-          <p>Candidates start with Technical questions (70% cutoff), then proceed to HR questions. This dashboard auto-refreshes every 10 seconds. View each candidate's round, time remaining, and scores in real-time.</p>
+          <p>Candidates start with Technical questions ({session?.technical_cutoff || 70}% cutoff), then proceed to HR questions. This dashboard auto-refreshes every 10 seconds. View each candidate's round, time remaining, and scores in real-time.</p>
         </div>
         {wsConnected ? (
           <span className="flex items-center space-x-1 text-xs text-green-700 bg-green-100 px-2 py-1 rounded-full flex-shrink-0">
@@ -1317,8 +1354,8 @@ export default function LiveInterview() {
         <button
           onClick={() => {
             setActiveTab('gallery');
-            // Request streams for the current page when entering gallery
-            setTimeout(() => requestGalleryStreamsForPage(galleryPage), 100);
+            // Ensure all streamable candidates are connected
+            setTimeout(() => ensureAllGalleryConnections(), 100);
           }}
           className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
             activeTab === 'gallery'
@@ -1704,7 +1741,6 @@ export default function LiveInterview() {
                       onClick={() => {
                         const newPage = currentPage - 1;
                         setGalleryPage(newPage);
-                        requestGalleryStreamsForPage(newPage);
                       }}
                       disabled={currentPage === 0}
                       className="flex items-center space-x-1 px-4 py-2 rounded-lg bg-white border border-gray-200 text-sm font-medium hover:bg-gray-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1718,7 +1754,6 @@ export default function LiveInterview() {
                           key={i}
                           onClick={() => {
                             setGalleryPage(i);
-                            requestGalleryStreamsForPage(i);
                           }}
                           className={`w-8 h-8 rounded-lg text-sm font-semibold transition ${
                             i === currentPage
@@ -1734,7 +1769,6 @@ export default function LiveInterview() {
                       onClick={() => {
                         const newPage = currentPage + 1;
                         setGalleryPage(newPage);
-                        requestGalleryStreamsForPage(newPage);
                       }}
                       disabled={currentPage >= totalPages - 1}
                       className="flex items-center space-x-1 px-4 py-2 rounded-lg bg-white border border-gray-200 text-sm font-medium hover:bg-gray-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
