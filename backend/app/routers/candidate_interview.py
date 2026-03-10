@@ -836,6 +836,38 @@ async def get_session_progress(session_id: str):
             "proctoring": ai_sess.get("proctoring", {}),
         })
 
+    # ── Include candidates who joined but haven't started an AI session yet ──
+    # These candidates have status 'joined' in the candidates collection but no
+    # matching candidate_ai_sessions row, so they'd be invisible in the gallery.
+    ai_session_tokens = {r["candidate_token"] for r in results}
+    joined_cursor = db.candidates.find({
+        "interview_session_id": session_id,
+        "status": "joined",
+    })
+    async for cand in joined_cursor:
+        cand_token = cand.get("unique_token", "")
+        if cand_token and cand_token not in ai_session_tokens:
+            results.append({
+                "candidate_name": cand.get("name", cand.get("email", "Unknown")),
+                "candidate_email": cand.get("email", ""),
+                "status": "joined",
+                "current_round": "Technical",
+                "answered": 0,
+                "total_questions": 0,
+                "avg_scores": {"content_score": 0, "communication_score": 0, "overall_score": 0, "keyword_coverage": 0},
+                "current_question": None,
+                "latest_evaluation": None,
+                "started_at": cand.get("joined_at"),
+                "completed_at": None,
+                "session_id": None,
+                "candidate_token": cand_token,
+                "technical_score": None,
+                "hr_score": None,
+                "termination_reason": None,
+                "time_status": None,
+                "proctoring": {},
+            })
+
     return results
 
 

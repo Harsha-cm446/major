@@ -50,14 +50,25 @@ const ICE_SERVERS = [
 ];
 
 // ── Gallery Tile: auto-attaches stream to video ─────────────────────
-function GalleryVideoTile({ token, stream, candidateName, type, onEnlarge }) {
+const GalleryVideoTile = React.memo(function GalleryVideoTile({ token, stream, candidateName, type, onEnlarge }) {
   const videoRef = useRef(null);
+
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => {});
+    const video = videoRef.current;
+    if (!video || !stream) return;
+    // Only reassign if stream actually changed — prevents flicker on re-renders
+    if (video.srcObject && video.srcObject.id === stream.id) return;
+    video.srcObject = stream;
+    video.play().catch(() => {});
+  }, [stream]);
+
+  useEffect(() => {
+    // Clear srcObject when stream is removed
+    if (!stream && videoRef.current) {
+      videoRef.current.srcObject = null;
     }
   }, [stream]);
+
   return (
     <div className="absolute inset-0">
       {stream ? (
@@ -75,7 +86,7 @@ function GalleryVideoTile({ token, stream, candidateName, type, onEnlarge }) {
       </div>
     </div>
   );
-}
+});
 
 // ── Enlarged Video: used in the modal ───────────────────────────────
 function EnlargedVideo({ stream, label, icon, objectFit }) {
@@ -270,10 +281,15 @@ export default function LiveInterview() {
         // On (re)connect the backend sends participants + persisted stream_status
         if (data.stream_status) {
           applyStreamStatus(data.stream_status);
-          // Pre-populate galleryPeersRef so incoming offers are routed to gallery
+          // Pre-populate galleryPeersRef AND immediately request streams
+          // so gallery is pre-connected even before HR opens the gallery tab
           Object.entries(data.stream_status).forEach(([connId, info]) => {
             if ((info.has_camera || info.has_screen) && !galleryPeersRef.current[connId]) {
               galleryPeersRef.current[connId] = { pc: null, name: info.name || connId };
+              // Immediately request stream — don't wait for tab switch
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'request_stream', target: connId }));
+              }
             }
           });
         }
@@ -282,10 +298,14 @@ export default function LiveInterview() {
         // Response to request_all_streams — bulk update
         if (data.streams) {
           applyStreamStatus(data.streams);
-          // Pre-populate galleryPeersRef so incoming offers are routed to gallery
+          // Pre-populate galleryPeersRef AND immediately request streams
           Object.entries(data.streams).forEach(([connId, info]) => {
             if ((info.has_camera || info.has_screen) && !galleryPeersRef.current[connId]) {
               galleryPeersRef.current[connId] = { pc: null, name: info.name || connId };
+              // Immediately request stream — don't wait for tab switch
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'request_stream', target: connId }));
+              }
             }
           });
         }
@@ -678,42 +698,54 @@ export default function LiveInterview() {
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') {
-        console.log('[Gallery] Peer connection failed for', token, '— retrying in 1s');
+      const state = pc.connectionState;
+      console.log('[Gallery] Connection state for', token, ':', state);
+      if (state === 'failed') {
+        console.log('[Gallery] Peer connection failed for', token, '— retrying in 1.5s');
         cleanupGalleryPeer(token);
         setTimeout(() => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             galleryPeersRef.current[token] = { pc: null, name: candidateName };
             wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
           }
-        }, 1000);
-      } else if (pc.connectionState === 'disconnected') {
+        }, 1500);
+      } else if (state === 'disconnected') {
+        // Wait longer before acting — ICE often recovers on its own
         setTimeout(() => {
-          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-            console.log('[Gallery] Peer connection stale for', token, '— retrying');
-            cleanupGalleryPeer(token);
-            setTimeout(() => {
+          const current = galleryPeersRef.current[token];
+          if (current?.pc === pc && (pc.connectionState === 'disconnected' || pc.connectionState === 'failed')) {
+            console.log('[Gallery] Peer still disconnected for', token, '— restarting ICE');
+            try {
+              pc.restartIce(); // Try ICE restart first — keeps video alive
+            } catch (e) {
+              // restartIce not supported, fall back to full reconnect
+              cleanupGalleryPeer(token);
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 galleryPeersRef.current[token] = { pc: null, name: candidateName };
                 wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
               }
-            }, 1000);
+            }
           }
-        }, 3000);
+        }, 8000); // Increased from 3s: give ICE time to self-recover
       }
     };
 
     // ICE-level failure detection (fires faster than connectionState)
     pc.oniceconnectionstatechange = () => {
       if (pc.iceConnectionState === 'failed') {
-        console.log('[Gallery] ICE failed for', token, '— retrying');
-        cleanupGalleryPeer(token);
-        setTimeout(() => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            galleryPeersRef.current[token] = { pc: null, name: candidateName };
-            wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
-          }
-        }, 1000);
+        console.log('[Gallery] ICE failed for', token, '— attempting ICE restart');
+        try {
+          pc.restartIce(); // Try in-place ICE restart — avoids visible stream interruption
+        } catch (e) {
+          // Fall back to full reconnect if restartIce fails
+          cleanupGalleryPeer(token);
+          setTimeout(() => {
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              galleryPeersRef.current[token] = { pc: null, name: candidateName };
+              wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
+            }
+          }, 1000);
+        }
       }
     };
 
@@ -799,8 +831,8 @@ export default function LiveInterview() {
   }, [streamableCandidates]);
 
   // ── Periodic gallery health check: detect dead peers and ensure all candidates connected ──
+  // Runs regardless of active tab so streams are always pre-warmed
   useEffect(() => {
-    if (activeTab !== 'gallery') return;
     const healthCheck = setInterval(() => {
       // Clean up dead peers
       const peers = galleryPeersRef.current;
@@ -816,7 +848,7 @@ export default function LiveInterview() {
       ensureAllGalleryConnections();
     }, 8000);
     return () => clearInterval(healthCheck);
-  }, [activeTab, cleanupGalleryPeer, ensureAllGalleryConnections]);
+  }, [cleanupGalleryPeer, ensureAllGalleryConnections]);
 
   const viewReport = async (candidateToken) => {
     setReportLoading(true);
@@ -1354,8 +1386,13 @@ export default function LiveInterview() {
         <button
           onClick={() => {
             setActiveTab('gallery');
-            // Ensure all streamable candidates are connected
-            setTimeout(() => ensureAllGalleryConnections(), 100);
+            // Force re-announce from all candidates + ensure peer connections
+            setTimeout(() => {
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'request_all_streams' }));
+              }
+              ensureAllGalleryConnections();
+            }, 200);
           }}
           className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
             activeTab === 'gallery'
@@ -1659,7 +1696,7 @@ export default function LiveInterview() {
       {/* ── Gallery View Tab ───────────────────────── */}
       {activeTab === 'gallery' && (() => {
         const inProgressCandidates = candidates
-          .filter(c => c.status === 'in_progress' && streamableCandidates[c.candidate_token])
+          .filter(c => ['in_progress', 'joined'].includes(c.status) && streamableCandidates[c.candidate_token])
           .map(c => ({
             token: c.candidate_token,
             name: c.candidate_name || streamableCandidates[c.candidate_token]?.name || 'Unknown',

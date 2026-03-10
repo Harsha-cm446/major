@@ -987,17 +987,31 @@ export default function CandidateJoin() {
       const state = pc.iceConnectionState;
       console.log('[Candidate WebRTC] ICE state:', state, 'for', targetId);
       if (state === 'failed') {
-        // ICE failed — close and let HR re-request
-        pc.close();
-        delete peerConnectionsRef.current[targetId];
+        // Try ICE restart first — avoids a full offer/answer renegotiation
+        console.log('[Candidate WebRTC] ICE failed for', targetId, '— attempting restart');
+        try {
+          pc.restartIce();
+        } catch (e) {
+          // restartIce failed — close and let HR re-request
+          pc.close();
+          delete peerConnectionsRef.current[targetId];
+        }
       } else if (state === 'disconnected') {
-        // ICE disconnected — attempt ICE restart after 3s
+        // ICE disconnected — wait 5s before restart (gives time for self-recovery)
         setTimeout(() => {
-          if (pc.iceConnectionState === 'disconnected' && peerConnectionsRef.current[targetId] === pc) {
+          if (
+            (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') &&
+            peerConnectionsRef.current[targetId] === pc
+          ) {
             console.log('[Candidate WebRTC] ICE restart for', targetId);
-            pc.restartIce();
+            try {
+              pc.restartIce();
+            } catch (e) {
+              pc.close();
+              delete peerConnectionsRef.current[targetId];
+            }
           }
-        }, 3000);
+        }, 5000); // Increased from 3s → 5s for more recovery time
       }
     };
 
