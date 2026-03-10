@@ -6,6 +6,7 @@ import { Download, Loader2, CheckCircle, XCircle, AlertTriangle, FileBarChart } 
 import {
   RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  LineChart, Line, Area, AreaChart,
 } from 'recharts';
 
 export default function InterviewReport() {
@@ -320,6 +321,84 @@ export default function InterviewReport() {
           </ResponsiveContainer>
         </div>
       </div>
+
+      {/* Strengths & Weaknesses */}
+
+      {/* ═══ Sentiment Timeline ═══ */}
+      {report.emotion_timeline && report.emotion_timeline.length > 2 && (
+        <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm border border-gray-100 p-6 mb-8">
+          <h3 className="font-bold text-gray-900 mb-1">📊 Emotion Timeline</h3>
+          <p className="text-xs text-gray-400 mb-4">Confidence and emotional stability throughout the interview</p>
+          <ResponsiveContainer width="100%" height={260}>
+            <AreaChart data={report.emotion_timeline.map((p) => ({
+              ...p,
+              time: `${Math.floor(p.t / 60)}:${String(Math.floor(p.t % 60)).padStart(2, '0')}`,
+            }))}>
+              <defs>
+                <linearGradient id="colorConf" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#667eea" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#667eea" stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="colorStab" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="time" tick={{ fontSize: 11 }} label={{ value: 'Time', position: 'insideBottom', offset: -2, fontSize: 11 }} />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
+              <Tooltip
+                content={({ active, payload }) => {
+                  if (!active || !payload?.length) return null;
+                  const d = payload[0].payload;
+                  const emotionColors = {
+                    happy: 'text-green-600', neutral: 'text-gray-600', sad: 'text-blue-600',
+                    angry: 'text-red-600', surprise: 'text-yellow-600', fear: 'text-purple-600', disgust: 'text-orange-600',
+                  };
+                  return (
+                    <div className="bg-white rounded-lg shadow-lg border border-gray-100 p-3 text-xs">
+                      <p className="font-semibold text-gray-800 mb-1">{d.time}</p>
+                      <p className={`font-medium ${emotionColors[d.emotion] || 'text-gray-600'}`}>
+                        Emotion: {d.emotion}
+                      </p>
+                      <p className="text-indigo-600">Confidence: {Math.round(d.confidence)}%</p>
+                      <p className="text-emerald-600">Stability: {Math.round(d.stability)}%</p>
+                    </div>
+                  );
+                }}
+              />
+              <Legend />
+              <Area type="monotone" dataKey="confidence" stroke="#667eea" fillOpacity={1} fill="url(#colorConf)" name="Confidence" strokeWidth={2} />
+              <Area type="monotone" dataKey="stability" stroke="#10b981" fillOpacity={1} fill="url(#colorStab)" name="Stability" strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+          {/* Emotion distribution summary */}
+          {(() => {
+            const emotionCounts = {};
+            report.emotion_timeline.forEach((p) => {
+              emotionCounts[p.emotion] = (emotionCounts[p.emotion] || 0) + 1;
+            });
+            const total = report.emotion_timeline.length;
+            const sorted = Object.entries(emotionCounts).sort((a, b) => b[1] - a[1]);
+            const emotionBg = {
+              happy: 'bg-green-100 text-green-700', neutral: 'bg-gray-100 text-gray-700',
+              sad: 'bg-blue-100 text-blue-700', angry: 'bg-red-100 text-red-700',
+              surprise: 'bg-yellow-100 text-yellow-700', fear: 'bg-purple-100 text-purple-700',
+              disgust: 'bg-orange-100 text-orange-700',
+            };
+            return (
+              <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-gray-100">
+                <span className="text-xs text-gray-500 mr-1 self-center">Distribution:</span>
+                {sorted.map(([emotion, count]) => (
+                  <span key={emotion} className={`text-xs px-2 py-0.5 rounded-full font-medium ${emotionBg[emotion] || 'bg-gray-100 text-gray-600'}`}>
+                    {emotion} {Math.round((count / total) * 100)}%
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       {/* Strengths & Weaknesses */}
       <div className="grid md:grid-cols-2 gap-6 mb-8">

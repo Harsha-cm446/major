@@ -112,6 +112,9 @@ export const interviewAPI = {
     api.post(`/interviews/sessions/${sessionId}/invite`, { emails }),
   listCandidates: (sessionId) =>
     api.get(`/interviews/sessions/${sessionId}/candidates`),
+  // Analytics
+  getDashboardAnalytics: () => api.get('/interviews/analytics/dashboard'),
+  getCandidateComparison: (sessionId) => api.get(`/interviews/analytics/comparison/${sessionId}`),
 };
 
 // ── Candidate AI Interview (token-based, no auth) ────

@@ -24,6 +24,7 @@ Fusion Mechanism:
   Attention-based cross-modal fusion with learned weights
 """
 
+import asyncio
 import time
 import math
 import base64
@@ -351,6 +352,14 @@ class MultimodalAnalysisEngine:
             return self._process_face(frame)
         except Exception as e:
             return self._default_emotion()
+
+    async def analyze_face_async(self, frame_b64: str) -> Dict[str, Any]:
+        """Non-blocking version of analyze_face — runs in a thread pool."""
+        return await asyncio.to_thread(self.analyze_face, frame_b64)
+
+    async def detect_persons_async(self, frame_b64: str) -> int:
+        """Non-blocking version of detect_persons — runs in a thread pool."""
+        return await asyncio.to_thread(self.detect_persons, frame_b64)
 
     def _process_face(self, frame: np.ndarray) -> Dict[str, Any]:
         """Process a CV2 frame for facial analysis."""

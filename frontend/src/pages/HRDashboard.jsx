@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { interviewAPI, gpuAPI } from '../services/api';
-import { Plus, Users, Calendar, Trash2, Clock, ArrowRight, Briefcase, LogOut, Loader2, Server, Activity } from 'lucide-react';
+import { Plus, Users, Calendar, Trash2, Clock, ArrowRight, Briefcase, LogOut, Loader2, Server, Activity, BarChart3, GitCompare } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 export default function HRDashboard() {
@@ -84,13 +84,22 @@ export default function HRDashboard() {
           <h1 className="text-3xl font-bold text-gray-900">HR Dashboard</h1>
           <p className="text-gray-500 mt-1">Manage interview sessions and candidates</p>
         </div>
-        <Link
-          to="/hr/create-session"
-          className="mt-4 sm:mt-0 gradient-bg text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 hover:opacity-90 shadow-md hover:shadow-lg transition-all"
-        >
-          <Plus size={18} />
-          <span>New Session</span>
-        </Link>
+        <div className="flex gap-3">
+          <Link
+            to="/hr/analytics"
+            className="mt-4 sm:mt-0 bg-white text-gray-700 border border-gray-200 px-5 py-3 rounded-xl font-semibold flex items-center gap-2 hover:bg-gray-50 shadow-sm transition-all"
+          >
+            <BarChart3 size={18} />
+            <span>Analytics</span>
+          </Link>
+          <Link
+            to="/hr/create-session"
+            className="mt-4 sm:mt-0 gradient-bg text-white px-6 py-3 rounded-xl font-semibold flex items-center gap-2 hover:opacity-90 shadow-md hover:shadow-lg transition-all"
+          >
+            <Plus size={18} />
+            <span>New Session</span>
+          </Link>
+        </div>
       </div>
 
       {/* Stats */}
@@ -244,6 +253,13 @@ export default function HRDashboard() {
                   className="flex-1 text-center gradient-bg text-white py-2.5 rounded-xl text-sm font-semibold hover:opacity-90 transition-all flex items-center justify-center gap-1"
                 >
                   Go Live <ArrowRight size={14} />
+                </Link>
+                <Link
+                  to={`/hr/comparison/${s.id}`}
+                  className="p-2.5 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+                  title="Compare Candidates"
+                >
+                  <GitCompare size={16} />
                 </Link>
                 {s.status !== 'completed' && (
                   <button

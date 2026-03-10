@@ -485,13 +485,14 @@ Return ONLY a JSON object in this exact format:
     # Phase 2 (Background):    LLM depth analysis + AI feedback
     #
 
-    def evaluate_answer_instant(
+    async def evaluate_answer_instant(
         self,
         question: str,
         ideal_answer: str,
         candidate_answer: str,
         keywords: List[str],
         round_type: str = "Technical",
+        scoring_weights: Dict[str, float] = None,
     ) -> Dict[str, Any]:
         """Phase 1: Instant scoring using local models only (no LLM calls).
         Returns a score within ~1-2 seconds.
@@ -508,7 +509,7 @@ Return ONLY a JSON object in this exact format:
             }
 
         # 1. Semantic similarity (SentenceTransformer — local, fast)
-        embeddings = self.embedding_model.encode([ideal_answer, candidate_answer])
+        embeddings = await asyncio.to_thread(self.embedding_model.encode, [ideal_answer, candidate_answer])
         sim_score = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]) * 100
 
         # 2. Keyword coverage (pure string match — instant)
@@ -554,13 +555,19 @@ Return ONLY a JSON object in this exact format:
         # 6. Confidence placeholder
         confidence_score = 50.0
 
-        # 7. Overall score with master weights
+        # 7. Overall score with master weights (configurable)
+        w = scoring_weights or {}
+        w_content = w.get("content", 0.40)
+        w_keyword = w.get("keyword", 0.20)
+        w_depth = w.get("depth", 0.15)
+        w_communication = w.get("communication", 0.15)
+        w_confidence = w.get("confidence", 0.10)
         overall = (
-            content_score * 0.40
-            + keyword_pct * 0.20
-            + depth_score * 0.15
-            + comm_score * 0.15
-            + confidence_score * 0.10
+            content_score * w_content
+            + keyword_pct * w_keyword
+            + depth_score * w_depth
+            + comm_score * w_communication
+            + confidence_score * w_confidence
         )
 
         if overall >= 80:
@@ -620,6 +627,7 @@ Return ONLY a JSON object in this exact format:
         keywords: List[str],
         instant_result: Dict[str, Any],
         round_type: str = "Technical",
+        scoring_weights: Dict[str, float] = None,
     ) -> Dict[str, Any]:
         """Phase 2: Deep analysis using LLM (runs in background).
         Enhances the instant result with LLM depth and feedback.
@@ -631,18 +639,19 @@ Return ONLY a JSON object in this exact format:
 
             depth_score, feedback = await asyncio.gather(depth_task, feedback_task)
 
-            # Recalculate overall with real depth score
+            # Recalculate overall with real depth score (configurable weights)
             content_score = instant_result["content_score"]
             keyword_pct = instant_result["keyword_score"]
             comm_score = instant_result["communication_score"]
             confidence_score = instant_result["confidence_score"]
 
+            w = scoring_weights or {}
             overall = (
-                content_score * 0.40
-                + keyword_pct * 0.20
-                + depth_score * 0.15
-                + comm_score * 0.15
-                + confidence_score * 0.10
+                content_score * w.get("content", 0.40)
+                + keyword_pct * w.get("keyword", 0.20)
+                + depth_score * w.get("depth", 0.15)
+                + comm_score * w.get("communication", 0.15)
+                + confidence_score * w.get("confidence", 0.10)
             )
 
             if overall >= 80:
@@ -672,20 +681,23 @@ Return ONLY a JSON object in this exact format:
         keywords: List[str],
         round_type: str = "Technical",
         is_coding: bool = False,
+        scoring_weights: Dict[str, float] = None,
     ) -> Dict[str, Any]:
         """Full evaluation: runs instant first, then deep in parallel.
         Returns the best available result.
         """
         # Phase 1: Instant (< 2s)
-        instant = self.evaluate_answer_instant(
-            question, ideal_answer, candidate_answer, keywords, round_type
+        instant = await self.evaluate_answer_instant(
+            question, ideal_answer, candidate_answer, keywords, round_type,
+            scoring_weights=scoring_weights,
         )
 
         # Phase 2: Deep (parallel LLM calls)
         try:
             deep = await asyncio.wait_for(
                 self.evaluate_answer_deep(
-                    question, ideal_answer, candidate_answer, keywords, instant, round_type
+                    question, ideal_answer, candidate_answer, keywords, instant, round_type,
+                    scoring_weights=scoring_weights,
                 ),
                 timeout=15.0,  # Don't wait more than 15s for deep analysis
             )
@@ -836,7 +848,7 @@ Return ONLY a JSON object:
         parsed = self._parse_json_from_response(response)
 
         if not parsed or "overall_score" not in parsed:
-            embeddings = self.embedding_model.encode([ideal_answer, submitted_code])
+            embeddings = await asyncio.to_thread(self.embedding_model.encode, [ideal_answer, submitted_code])
             sim = float(cosine_similarity([embeddings[0]], [embeddings[1]])[0][0]) * 100
             parsed = {
                 "correctness_score": round(sim, 1),
@@ -1126,6 +1138,8 @@ Return ONLY a JSON object:
             "development_roadmap": development_roadmap,
             # ── Proctoring data ──
             "proctoring": session.get("proctoring", {}),
+            # ── Emotion timeline for sentiment chart ──
+            "emotion_timeline": session.get("emotion_timeline", []),
             # ── Candidate Profile from Data Collection ──
             "candidate_profile_summary": candidate_profile_summary,
         }

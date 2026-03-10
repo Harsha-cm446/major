@@ -2,7 +2,23 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { interviewAPI } from '../services/api';
 import toast from 'react-hot-toast';
-import { Loader2, Briefcase, ArrowRight } from 'lucide-react';
+import { Loader2, Briefcase, ArrowRight, Sliders } from 'lucide-react';
+
+const DEFAULT_WEIGHTS = {
+  content: 40,
+  keyword: 20,
+  depth: 15,
+  communication: 15,
+  confidence: 10,
+};
+
+const WEIGHT_LABELS = {
+  content: 'Content Accuracy',
+  keyword: 'Keyword Coverage',
+  depth: 'Depth of Knowledge',
+  communication: 'Communication',
+  confidence: 'Confidence',
+};
 
 export default function CreateSession() {
   const navigate = useNavigate();
@@ -15,20 +31,33 @@ export default function CreateSession() {
     job_description: '',
     experience_level: 'mid',
   });
+  const [weights, setWeights] = useState({ ...DEFAULT_WEIGHTS });
+  const [showWeights, setShowWeights] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+
+  const handleWeightChange = (key, value) => {
+    setWeights((prev) => ({ ...prev, [key]: Math.max(0, Math.min(100, Number(value))) }));
+  };
+
+  const totalWeight = Object.values(weights).reduce((s, v) => s + v, 0);
+
+  const resetWeights = () => setWeights({ ...DEFAULT_WEIGHTS });
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
+      const total = Object.values(weights).reduce((s, v) => s + v, 0);
+      const scoring_weights = total > 0
+        ? Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, v / total]))
+        : undefined;
       const res = await interviewAPI.createSession({
         ...form,
         duration_minutes: parseInt(form.duration_minutes),
-        // Send the datetime-local value directly (without UTC conversion)
-        // so the stored time matches what the HR intended for the email
         scheduled_time: form.scheduled_time,
+        scoring_weights,
       });
       toast.success('Session created!');
       navigate(`/hr/session/${res.data.id}`);
@@ -142,6 +171,56 @@ export default function CreateSession() {
               className={inputClass + " resize-none"}
             />
           </div>
+
+          {/* Scoring Weights */}
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setShowWeights(!showWeights)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50/80 hover:bg-gray-100 transition-all text-sm font-semibold text-gray-700"
+            >
+              <span className="flex items-center gap-2">
+                <Sliders size={16} className="text-indigo-500" />
+                Scoring Weights
+              </span>
+              <span className="text-xs text-gray-400">{showWeights ? 'Collapse' : 'Customize'}</span>
+            </button>
+            {showWeights && (
+              <div className="p-4 space-y-4">
+                <p className="text-xs text-gray-400">
+                  Adjust how each dimension contributes to the overall score. Values are normalized automatically.
+                </p>
+                {Object.entries(WEIGHT_LABELS).map(([key, label]) => (
+                  <div key={key}>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm text-gray-600">{label}</label>
+                      <span className="text-xs font-mono text-gray-400">
+                        {totalWeight > 0 ? Math.round((weights[key] / totalWeight) * 100) : 0}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={weights[key]}
+                      onChange={(e) => handleWeightChange(key, e.target.value)}
+                      className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                  </div>
+                ))}
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={resetWeights}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                  >
+                    Reset to Defaults
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <button
             type="submit"
             disabled={loading}

@@ -14,7 +14,7 @@ import asyncio
 import time
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 from bson import ObjectId
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -40,7 +40,8 @@ except Exception:
 
 # Per-candidate-session gaze FSMs (keyed by ai_session ObjectId string)
 _candidate_gaze_fsms = {}
-
+# Per-session locks to serialize proctoring frame processing (thread-safety)
+_proctoring_locks: Dict[str, asyncio.Lock] = {}
 router = APIRouter(prefix="/api/candidate-interview", tags=["Candidate AI Interview"])
 
 TECH_CUTOFF = 70.0
@@ -273,6 +274,7 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
             "identity_mismatches": 0,
             "violation_log": [],
         },
+        "scoring_weights": session.get("scoring_weights"),
         "created_at": started_at,
         "started_at": started_at,
     }
@@ -394,12 +396,14 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
         )
     else:
         # Two-phase: instant score first
-        instant_eval = ai_service.evaluate_answer_instant(
+        scoring_weights = ai_session.get("scoring_weights")
+        instant_eval = await ai_service.evaluate_answer_instant(
             question=q_doc["question"],
             ideal_answer=q_doc.get("ideal_answer", ""),
             candidate_answer=answer_text,
             keywords=q_doc.get("keywords", []),
             round_type=q_doc.get("round", "Technical"),
+            scoring_weights=scoring_weights,
         )
 
         # Parallel: deep evaluation + next question generation
@@ -419,6 +423,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
             keywords=q_doc.get("keywords", []),
             instant_result=instant_eval,
             round_type=q_doc.get("round", "Technical"),
+            scoring_weights=scoring_weights,
         )
 
         next_q_task = ai_service.generate_question(
@@ -889,6 +894,7 @@ async def _complete_candidate_session(db, ai_session: dict, candidate: dict, all
         rl_adaptation_service.cleanup_session(session_id)
         # Clean up gaze FSM for this candidate session
         _candidate_gaze_fsms.pop(session_id, None)
+        _proctoring_locks.pop(session_id, None)
         # Clean up proctoring session
         if proctor_manager is not None:
             proctor_manager.remove(session_id)
@@ -1007,20 +1013,24 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
     proctor_result = None
 
     if body.video_frame:
-        # ── Run full proctoring pipeline (identity + objects + risk) ──
-        if proctor_manager is not None:
-            proctor_session = proctor_manager.get_or_create(session_id)
-            try:
-                proctor_result = proctor_session.process_frame(body.video_frame)
-                person_count = proctor_result.get("person_count", 0)
-            except Exception as exc:
-                print(f"[PROCTOR] Exception: {exc}")
+        # Serialize proctoring per session to avoid race conditions on ProctorSession state
+        if session_id not in _proctoring_locks:
+            _proctoring_locks[session_id] = asyncio.Lock()
+        async with _proctoring_locks[session_id]:
+            # ── Run full proctoring pipeline (identity + objects + risk) ──
+            if proctor_manager is not None:
+                proctor_session = proctor_manager.get_or_create(session_id)
+                try:
+                    proctor_result = await asyncio.to_thread(proctor_session.process_frame, body.video_frame)
+                    person_count = proctor_result.get("person_count", 0)
+                except Exception as exc:
+                    print(f"[PROCTOR] Exception: {exc}")
 
         # ── Run gaze FSM (existing logic — only for eye_contact_score → FSM) ──
         # Person count already obtained from proctor_result above; no need to call detect_persons
         if multimodal_engine is not None:
             try:
-                visual = multimodal_engine.analyze_face(body.video_frame)
+                visual = await multimodal_engine.analyze_face_async(body.video_frame)
 
                 eye_contact_score = visual.get("eye_contact_score")
                 if eye_contact_score is not None:
@@ -1042,6 +1052,30 @@ async def analyze_candidate_frame(token: str, body: CandidateGazeAnalysisRequest
         },
         "person_count": person_count,
     }
+
+    # ── Store emotion timeline data point (sampled every ~5s) ──
+    if body.video_frame and multimodal_engine is not None:
+        try:
+            latest_emotion = multimodal_engine.emotion_history[-1] if multimodal_engine.emotion_history else None
+            if latest_emotion and latest_emotion.get("face_detected"):
+                # Sample: only store if at least 5s since last stored point
+                existing_timeline = ai_session.get("emotion_timeline", [])
+                last_ts = existing_timeline[-1]["t"] if existing_timeline else 0
+                started_at = ai_session.get("started_at", ai_session.get("created_at"))
+                elapsed = (datetime.utcnow() - started_at).total_seconds() if started_at else 0
+                if elapsed - last_ts >= 5:
+                    emotion_point = {
+                        "t": round(elapsed, 1),
+                        "emotion": latest_emotion.get("dominant_emotion", "neutral"),
+                        "confidence": round(latest_emotion.get("confidence_score", 50), 1),
+                        "stability": round(latest_emotion.get("emotion_stability", 50), 1),
+                    }
+                    await db.candidate_ai_sessions.update_one(
+                        {"_id": ai_session["_id"]},
+                        {"$push": {"emotion_timeline": emotion_point}},
+                    )
+        except Exception:
+            pass  # Non-critical — don't break the proctoring pipeline
 
     # Attach proctoring data if available
     if proctor_result:
@@ -1105,7 +1139,7 @@ async def register_candidate_face(token: str, body: CandidateFaceRegisterRequest
         return {"registered": False, "message": "Proctoring service unavailable"}
 
     proctor_session = proctor_manager.get_or_create(session_id)
-    result = proctor_session.register_face(body.video_frame)
+    result = await asyncio.to_thread(proctor_session.register_face, body.video_frame)
     return result
 
 

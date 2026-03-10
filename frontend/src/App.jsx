@@ -11,6 +11,8 @@ import StudentDashboard from './pages/StudentDashboard';
 import MockInterview from './pages/MockInterview';
 import InterviewReport from './pages/InterviewReport';
 import HRDashboard from './pages/HRDashboard';
+import HRAnalytics from './pages/HRAnalytics';
+import CandidateComparison from './pages/CandidateComparison';
 import CreateSession from './pages/CreateSession';
 import SessionDetail from './pages/SessionDetail';
 import LiveInterview from './pages/LiveInterview';
@@ -48,6 +50,8 @@ function AppRoutes() {
 
         {/* HR routes */}
         <Route path="/hr" element={<ProtectedRoute roles={['hr', 'admin']}><HRDashboard /></ProtectedRoute>} />
+        <Route path="/hr/analytics" element={<ProtectedRoute roles={['hr', 'admin']}><HRAnalytics /></ProtectedRoute>} />
+        <Route path="/hr/comparison/:sessionId" element={<ProtectedRoute roles={['hr', 'admin']}><CandidateComparison /></ProtectedRoute>} />
         <Route path="/hr/create-session" element={<ProtectedRoute roles={['hr', 'admin']}><CreateSession /></ProtectedRoute>} />
         <Route path="/hr/session/:sessionId" element={<ProtectedRoute roles={['hr', 'admin']}><SessionDetail /></ProtectedRoute>} />
         <Route path="/hr/live/:sessionId" element={<ProtectedRoute roles={['hr', 'admin']}><LiveInterview /></ProtectedRoute>} />

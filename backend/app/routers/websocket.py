@@ -260,7 +260,17 @@ async def interview_websocket(websocket: WebSocket, room_id: str):
                 await websocket.send_json({"type": "pong"})
 
     except WebSocketDisconnect:
-        await manager.leave_room(room_id, conn_id)
+        pass
     except Exception as e:
         print(f"WebSocket error: {e}")
+    finally:
+        # Guaranteed cleanup on any disconnect (normal, tab close, network drop)
         await manager.leave_room(room_id, conn_id)
+        # Notify remaining HR observers that a candidate disconnected abruptly
+        await manager._send_to_hr(room_id, {
+            "type": "candidate_disconnected",
+            "conn_id": conn_id,
+            "name": name,
+            "role": role,
+            "participants": manager._get_participants(room_id, include_hr=False),
+        })

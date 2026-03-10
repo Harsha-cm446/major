@@ -72,6 +72,14 @@ class TokenResponse(BaseModel):
 
 # ─── Interview Session ──────────────────────────────
 
+class ScoringWeights(BaseModel):
+    content: float = Field(default=0.40, ge=0, le=1)
+    keyword: float = Field(default=0.20, ge=0, le=1)
+    depth: float = Field(default=0.15, ge=0, le=1)
+    communication: float = Field(default=0.15, ge=0, le=1)
+    confidence: float = Field(default=0.10, ge=0, le=1)
+
+
 class InterviewSessionCreate(BaseModel):
     job_role: str = Field(..., min_length=2)
     scheduled_time: datetime
@@ -80,6 +88,7 @@ class InterviewSessionCreate(BaseModel):
     description: Optional[str] = None
     job_description: Optional[str] = None
     experience_level: Optional[str] = None
+    scoring_weights: Optional[ScoringWeights] = None
 
 
 class InterviewSessionResponse(BaseModel):
