@@ -18,14 +18,14 @@ Cost: ~$0.59/hr T4 GPU, only while actively serving requests. $0 when idle.
       $30/month free with payment method added.
 """
 
-import modal
+import modal  # pyright: ignore[reportMissingImports]
 
 # ── Configuration ──────────────────────────────────────────────
 MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct-AWQ"
 MODEL_REVISION = "main"
 MODEL_MAX_LEN = 4096
 GPU_TYPE = "T4"                # $0.59/hr, 16GB VRAM
-IDLE_TIMEOUT = 180              # auto-stop after 3 min idle
+IDLE_TIMEOUT = 60              # auto-stop after 1 min idle to save credits
 
 
 # ── Container Image ───────────────────────────────────────────

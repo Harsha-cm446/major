@@ -125,7 +125,7 @@ async def get_paper_metrics(user: dict = Depends(get_current_user)):
     Displays to the React HR Analytics tab.
     """
     db = get_database()
-    sessions_cursor = db.candidate_ai_sessions.find({})
+    candidate_sessions_cursor = db.candidate_ai_sessions.find({})
     
     total_interviews = 0
     total_questions_answered = 0
@@ -138,7 +138,7 @@ async def get_paper_metrics(user: dict = Depends(get_current_user)):
     # Track variance in overall scores for consistency
     score_variance_pool = []
     
-    async for session in sessions_cursor:
+    async for session in candidate_sessions_cursor:
         total_interviews += 1
         
         # 1. Processing / Latency
@@ -155,7 +155,7 @@ async def get_paper_metrics(user: dict = Depends(get_current_user)):
             if score is not None:
                 score_variance_pool.append(score)
             
-            # Simulated breakdown based on raw processing: Phase 1 is roughly ~15% of actual time, Phase 2 deep eval is the rest
+            # Simulated breakdown
             phase_1_latency_estimate_ms += (raw_processing / max(len(responses), 1)) * 0.15 
             
         # 3. RL Difficulty Shift Counter
@@ -166,6 +166,34 @@ async def get_paper_metrics(user: dict = Depends(get_current_user)):
                     rl_adaptations += 1
                     
         # 4. Proctoring Stats
+        proct = session.get("proctoring", {})
+        if isinstance(proct, dict):
+            total_proctoring_violations += proct.get("gaze_violations", 0)
+            total_proctoring_violations += proct.get("tab_switches", 0)
+
+    # LOOP 2: Student Mock Sessions (Combining both datasets)
+    mock_sessions_cursor = db.mock_sessions.find({})
+    async for session in mock_sessions_cursor:
+        total_interviews += 1
+        raw_processing = session.get("processing_time_total", 0) * 1000
+        latency_total_ms += raw_processing
+        
+        responses = session.get("responses", [])
+        total_questions_answered += len(responses)
+        
+        for idx, resp in enumerate(responses):
+            eval_data = resp.get("evaluation", {})
+            score = eval_data.get("overall_score")
+            if score is not None:
+                score_variance_pool.append(score)
+            phase_1_latency_estimate_ms += (raw_processing / max(len(responses), 1)) * 0.15
+            
+        diffs = [q.get("difficulty") for q in session.get("questions", []) if q.get("difficulty")]
+        if len(diffs) > 1:
+            for i in range(1, len(diffs)):
+                if diffs[i] != diffs[i-1]:
+                    rl_adaptations += 1
+                    
         proct = session.get("proctoring", {})
         if isinstance(proct, dict):
             total_proctoring_violations += proct.get("gaze_violations", 0)
