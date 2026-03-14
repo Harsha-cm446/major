@@ -16,6 +16,7 @@ Usage:
 import time
 import asyncio
 import logging
+import re
 from typing import Optional, List
 
 from google import genai
@@ -59,6 +60,8 @@ class ModelRegistry:
         self._last_call_ts: Optional[float] = None
         self._last_error: Optional[str] = None
         self._last_error_type: Optional[str] = None
+        self._last_provider: Optional[str] = None
+        self._last_provider_model: Optional[str] = None
 
         # OpenRouter call tracking
         self._openrouter_call_count = 0
@@ -170,6 +173,16 @@ class ModelRegistry:
         """Return the currently active model name."""
         return self._model_chain[self._active_model_idx]
 
+    @property
+    def last_provider(self) -> Optional[str]:
+        """Return last successful provider name (gemini/openrouter/vllm)."""
+        return self._last_provider
+
+    @property
+    def last_provider_model(self) -> Optional[str]:
+        """Return last successful provider model name."""
+        return self._last_provider_model
+
     # ── vLLM client (OpenAI-compatible, Modal GPU) ────────────
     def _get_vllm_client(self):
         """Get or create a vLLM client using the openai library."""
@@ -221,6 +234,28 @@ class ModelRegistry:
         err_str = str(error).lower()
         return any(m in err_str for m in ("401", "invalid api key", "invalid_api_key",
                                            "api_key_invalid", "authentication", "unauthorized"))
+
+    def _extract_retry_delay_seconds(self, error: Exception, default_seconds: int) -> int:
+        """Extract provider-suggested retry delay from error text; fallback to default."""
+        text = str(error)
+
+        # Gemini text often includes "Please retry in 41.42s"
+        match = re.search(r"retry in\s+([0-9]+(?:\.[0-9]+)?)s", text, re.IGNORECASE)
+        if match:
+            try:
+                return max(1, int(float(match.group(1))))
+            except ValueError:
+                pass
+
+        # Gemini details may include "retryDelay': '41s'"
+        match = re.search(r"retryDelay['\"]?\s*:\s*['\"]([0-9]+)s['\"]", text, re.IGNORECASE)
+        if match:
+            try:
+                return max(1, int(match.group(1)))
+            except ValueError:
+                pass
+
+        return default_seconds
 
     async def llm_generate(
         self,
@@ -291,13 +326,19 @@ class ModelRegistry:
         print(f"[llm_generate] Gemini: {len(self._api_keys)} keys, "
               f"{len(self._model_chain)} models, prompt_len={len(prompt)}")
 
+        ready_keys = [k for k in key_order if time.time() >= self._key_cooldowns.get(k, 0)]
+        if not ready_keys:
+            next_ready_at = min(self._key_cooldowns.get(k, now) for k in key_order)
+            wait_for = max(1, int(next_ready_at - now))
+            print(f"[llm_generate] Gemini keys cooling down ({len(key_order)}/{len(key_order)}). "
+                  f"Skipping Gemini and retrying fallback providers. Next key in ~{wait_for}s")
+            return ""
+
         for key_idx in key_order:
-            # Skip keys on cooldown (unless it's the only one left)
+            now = time.time()
             cooldown_until = self._key_cooldowns.get(key_idx, 0)
-            if now < cooldown_until and len(key_order) > 1:
-                remaining_keys = [k for k in key_order if now >= self._key_cooldowns.get(k, 0)]
-                if remaining_keys:
-                    continue
+            if now < cooldown_until:
+                continue
 
             client = self._get_client(key_idx)
             if client is None:
@@ -317,11 +358,14 @@ class ModelRegistry:
                     if now >= self._model_cooldowns.get(cd_key, 0):
                         models_to_try.append(m)
                         tried.add(m)
-            # Add cooldown models as last resort
-            for m in self._model_chain:
-                if m not in tried:
-                    models_to_try.append(m)
-                    tried.add(m)
+
+            # If all models for this key are currently cooling down, skip the key entirely.
+            if not models_to_try:
+                self._key_cooldowns[key_idx] = max(
+                    self._key_cooldowns.get(key_idx, 0),
+                    now + 1,
+                )
+                continue
 
             all_models_failed = True
             for model_name in models_to_try:
@@ -353,6 +397,8 @@ class ModelRegistry:
                         idx = self._model_chain.index(model_name)
                         if idx != self._active_model_idx:
                             self._active_model_idx = idx
+                        self._last_provider = "gemini"
+                        self._last_provider_model = model_name
                     all_models_failed = False
                     return text
 
@@ -369,9 +415,16 @@ class ModelRegistry:
                         break  # Try next key
 
                     elif self._is_quota_error(e) or getattr(e, 'status_code', None) in (403, 429, 503):
+                        # 24-hour cooldown on quota exhausted
+                        retry_delay = 86400 
                         logger.warning(f"Gemini quota/rate error key #{key_idx + 1} "
                                        f"model={model_name}: {e}")
-                        self._model_cooldowns[(key_idx, model_name)] = now + self._cooldown_seconds
+                        cooldown_until = time.time() + retry_delay
+                        self._model_cooldowns[(key_idx, model_name)] = cooldown_until
+                        self._key_cooldowns[key_idx] = max(
+                            self._key_cooldowns.get(key_idx, 0),
+                            cooldown_until,
+                        )
                         continue  # Try next model
 
                     elif "failed_precondition" in str(e).lower() or "not supported" in str(e).lower():
@@ -385,7 +438,15 @@ class ModelRegistry:
                         continue
 
             if all_models_failed:
-                self._key_cooldowns[key_idx] = now + self._cooldown_seconds
+                next_model_ready = max(
+                    now + 1,
+                    min(self._model_cooldowns.get((key_idx, m), now + self._cooldown_seconds)
+                        for m in self._model_chain),
+                )
+                self._key_cooldowns[key_idx] = max(
+                    self._key_cooldowns.get(key_idx, 0),
+                    next_model_ready,
+                )
                 print(f"[llm_generate] All Gemini models exhausted for key #{key_idx + 1}")
 
         return ""  # All Gemini keys exhausted
@@ -447,6 +508,8 @@ class ModelRegistry:
                     continue
 
                 self._openrouter_call_success += 1
+                self._last_provider = "openrouter"
+                self._last_provider_model = model_name
                 print(f"[llm_generate] OpenRouter OK model={model_name} "
                       f"len={len(text)} (OR success #{self._openrouter_call_success})")
                 return text
@@ -459,7 +522,8 @@ class ModelRegistry:
                       f"{self._last_error_type}: {self._last_error}")
 
                 if self._is_quota_error(e):
-                    self._openrouter_cooldowns[model_name] = now + self._cooldown_seconds
+                    # 24-hour cooldown on quota exhausted
+                    self._openrouter_cooldowns[model_name] = now + 86400
                     logger.warning(f"OpenRouter quota error model={model_name}: {e}")
                     continue  # Try next model
                 else:
@@ -514,6 +578,8 @@ class ModelRegistry:
 
             self._vllm_call_success += 1
             self._vllm_last_request_ts = time.time()
+            self._last_provider = "vllm"
+            self._last_provider_model = settings.VLLM_MODEL
             print(f"[llm_generate] vLLM OK model={settings.VLLM_MODEL} "
                   f"len={len(text)} (vLLM success #{self._vllm_call_success})")
             return text
@@ -568,6 +634,8 @@ class ModelRegistry:
                 _dt.datetime.fromtimestamp(self._last_call_ts).isoformat()
                 if self._last_call_ts else None
             ),
+            "last_provider": self._last_provider,
+            "last_provider_model": self._last_provider_model,
             "last_error": self._last_error,
             "last_error_type": self._last_error_type,
         }

@@ -114,6 +114,7 @@ export const interviewAPI = {
     api.get(`/interviews/sessions/${sessionId}/candidates`),
   // Analytics
   getDashboardAnalytics: () => api.get('/interviews/analytics/dashboard'),
+  getPaperMetrics: () => api.get('/analytics/paper-metrics'),
   getCandidateComparison: (sessionId) => api.get(`/interviews/analytics/comparison/${sessionId}`),
 };
 

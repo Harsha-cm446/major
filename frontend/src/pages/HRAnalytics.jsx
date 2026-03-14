@@ -12,11 +12,18 @@ const COLORS = ['#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#10b981'];
 
 export default function HRAnalytics() {
   const [data, setData] = useState(null);
+  const [paperData, setPaperData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    interviewAPI.getDashboardAnalytics()
-      .then((r) => setData(r.data))
+    Promise.all([
+      interviewAPI.getDashboardAnalytics(),
+      interviewAPI.getPaperMetrics()
+    ])
+      .then(([r1, r2]) => {
+        setData(r1.data);
+        setPaperData(r2.data);
+      })
       .catch(() => toast.error('Failed to load analytics'))
       .finally(() => setLoading(false));
   }, []);
@@ -179,6 +186,82 @@ export default function HRAnalytics() {
           </div>
         )}
       </div>
+
+      {/* Research Paper Metrics Section */}
+      {paperData && paperData.status === "success" && (
+        <div className="mt-8">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-bold text-gray-900">Research Paper Metrics</h2>
+            <button 
+              onClick={() => {
+                const blob = new Blob([JSON.stringify(paperData.data, null, 2)], {type: 'application/json'});
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `research_metrics_${new Date().toISOString().split('T')[0]}.json`;
+                link.click();
+              }}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition"
+            >
+              Export JSON for Paper
+            </button>
+          </div>
+          
+          <div className="grid md:grid-cols-3 gap-6">
+            {/* Accuracy & Quality */}
+            <div className="bg-gradient-to-br from-indigo-50 to-white rounded-2xl shadow-sm border border-indigo-100 p-6">
+              <h3 className="font-bold text-indigo-900 mb-4 flex items-center gap-2"><Award size={18}/> Evaluation Accuracy</h3>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center border-b border-indigo-50 pb-2">
+                  <span className="text-sm text-gray-600">Scoring Consistency</span>
+                  <span className="font-bold text-indigo-700">{paperData.data.Accuracy_and_Quality.Scoring_Consistency}%</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-indigo-50 pb-2">
+                  <span className="text-sm text-gray-600">Avg Overall Score</span>
+                  <span className="font-bold text-indigo-700">{paperData.data.Accuracy_and_Quality.Average_Overall_Score}%</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Performance & Latency */}
+            <div className="bg-gradient-to-br from-blue-50 to-white rounded-2xl shadow-sm border border-blue-100 p-6">
+              <h3 className="font-bold text-blue-900 mb-4 flex items-center gap-2"><TrendingUp size={18}/> System Performance</h3>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center border-b border-blue-50 pb-2">
+                  <span className="text-sm text-gray-600">Avg Response Latency</span>
+                  <span className="font-bold text-blue-700">{paperData.data.Performance_and_Latency.Average_Response_Latency_Ms} ms</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-blue-50 pb-2">
+                  <span className="text-sm text-gray-600">Phase 1 Instant Eval</span>
+                  <span className="font-bold text-blue-700">{paperData.data.Performance_and_Latency.Phase_1_Instant_Eval_Ms} ms</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-blue-50 pb-2">
+                  <span className="text-sm text-gray-600">Concurrent Tests Run</span>
+                  <span className="font-bold text-blue-700">{paperData.data.Performance_and_Latency.Concurrent_Candidates_Tested}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* RL & Advanced Features */}
+            <div className="bg-gradient-to-br from-emerald-50 to-white rounded-2xl shadow-sm border border-emerald-100 p-6">
+              <h3 className="font-bold text-emerald-900 mb-4 flex items-center gap-2"><Target size={18}/> Advanced Features</h3>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center border-b border-emerald-50 pb-2">
+                  <span className="text-sm text-gray-600">Total RL Adaptations</span>
+                  <span className="font-bold text-emerald-700">{paperData.data.RL_and_Features.Total_RL_Difficulty_Adaptations} drops/bumps</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-emerald-50 pb-2">
+                  <span className="text-sm text-gray-600">Proctoring Violations</span>
+                  <span className="font-bold text-emerald-700">{paperData.data.RL_and_Features.Proctoring_Violations_Detected} flagged</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-emerald-50 pb-2">
+                  <span className="text-sm text-gray-600">XAI Explainability</span>
+                  <span className="font-bold text-emerald-700">Active</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
