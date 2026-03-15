@@ -38,7 +38,7 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_FALLBACK_MODELS
-        value: nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free,mistralai/mistral-small-3.1-24b-instruct:free,meta-llama/llama-3.3-70b-instruct:free
+        value: nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free
       - key: FRONTEND_URL
         sync: false
       - key: PUBLIC_URL

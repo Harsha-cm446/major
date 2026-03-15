@@ -23,6 +23,10 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 router = APIRouter()
 
+# 16kHz mono PCM16 => 32000 bytes/sec.
+# Force-segment every ~15 seconds by default to keep Vosk lattice bounded.
+STT_FORCE_SEGMENT_BYTES = int(os.environ.get("STT_FORCE_SEGMENT_BYTES", "480000"))
+
 # Add ai-engine to path so we can import speech_to_text
 _ai_engine_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "ai-engine")
 if os.path.isdir(_ai_engine_dir):
@@ -96,6 +100,7 @@ async def stt_websocket(websocket: WebSocket):
     await websocket.send_json({"type": "ready", "engine": "vosk"})
 
     full_text = ""  # accumulate all final text segments
+    segment_bytes = 0
 
     try:
         while True:
@@ -104,6 +109,7 @@ async def stt_websocket(websocket: WebSocket):
             # Binary frame — raw PCM audio data
             if "bytes" in message and message["bytes"]:
                 audio_data = message["bytes"]
+                segment_bytes += len(audio_data)
                 result = transcribe_audio_chunk(recognizer, audio_data)
 
                 if result["is_final"] and result["text"]:
@@ -119,6 +125,21 @@ async def stt_websocket(websocket: WebSocket):
                         "text": result["partial"],
                         "full_text": (full_text + " " + result["partial"]).strip(),
                     })
+
+                # Safety valve: avoid very long recognizer runs that can trigger
+                # Kaldi lattice memory warnings. Flush and restart recognizer.
+                if segment_bytes >= STT_FORCE_SEGMENT_BYTES:
+                    forced = finalize_vosk(recognizer)
+                    if forced.get("text"):
+                        full_text += (" " + forced["text"]) if full_text else forced["text"]
+                        await websocket.send_json({
+                            "type": "final",
+                            "text": forced["text"],
+                            "full_text": full_text.strip(),
+                            "forced_segment": True,
+                        })
+                    recognizer = create_vosk_recognizer(sample_rate)
+                    segment_bytes = 0
 
             # Text frame — JSON command
             elif "text" in message and message["text"]:
@@ -136,6 +157,7 @@ async def stt_websocket(websocket: WebSocket):
                         sample_rate = new_rate
                         recognizer = create_vosk_recognizer(sample_rate)
                         full_text = ""
+                        segment_bytes = 0
                         await websocket.send_json({
                             "type": "ready",
                             "engine": "vosk",
@@ -156,11 +178,13 @@ async def stt_websocket(websocket: WebSocket):
                     # Reset recognizer for next utterance
                     recognizer = create_vosk_recognizer(sample_rate)
                     full_text = ""
+                    segment_bytes = 0
 
                 elif msg_type == "reset":
                     # Reset for a new question
                     recognizer = create_vosk_recognizer(sample_rate)
                     full_text = ""
+                    segment_bytes = 0
                     await websocket.send_json({"type": "ready", "engine": "vosk"})
 
     except WebSocketDisconnect:

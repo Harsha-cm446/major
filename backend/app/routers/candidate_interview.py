@@ -457,6 +457,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
     else:
         # Two-phase: instant score first
         scoring_weights = ai_session.get("scoring_weights")
+        live_conf = ai_session.get("current_metrics", {}).get("confidence", None)
         instant_eval = await ai_service.evaluate_answer_instant(
             question=q_doc["question"],
             ideal_answer=q_doc.get("ideal_answer", ""),
@@ -464,6 +465,7 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
             keywords=q_doc.get("keywords", []),
             round_type=q_doc.get("round", "Technical"),
             scoring_weights=scoring_weights,
+            live_confidence=live_conf,
         )
 
         # Parallel: deep evaluation + next question generation

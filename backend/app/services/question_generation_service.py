@@ -119,12 +119,13 @@ class QuestionGenerationService:
         from app.services.model_registry import model_registry
         max_tokens = 1024 if fast else 2048
         result = await model_registry.llm_generate(prompt, system, fast=fast, max_tokens=max_tokens)
+        provider = (model_registry.last_provider or "unknown").upper()
+        provider_model = model_registry.last_provider_model or model_registry.active_model
         if not result:
-            print(f"[QuestionGen] ⚠️ Gemini returned empty — will use template fallback. "
-                  f"Key configured: {bool(model_registry.gemini_client)}, "
-                  f"Active model: {model_registry.active_model}")
+            print(f"[QuestionGen] ⚠️ LLM returned empty — will use template fallback. "
+                  f"Last provider: {provider}, model: {provider_model}")
         else:
-            print(f"[QuestionGen] ✅ Gemini generated {len(result)} chars via {model_registry.active_model}")
+            print(f"[QuestionGen] ✅ Generated {len(result)} chars via {provider}:{provider_model}")
         return result
 
     def _parse_json(self, text: str) -> dict:

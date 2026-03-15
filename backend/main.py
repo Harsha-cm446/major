@@ -30,6 +30,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ AI warm-up failed (non-fatal): {e}")
 
+    # Train RL adaptation agent at startup so PPO policy is active
+    # Uses run_in_executor to keep the async event loop responsive
+    # 200 episodes: ~1-2s on CPU, sufficient for PPO convergence
+    try:
+        import asyncio as _asyncio
+        from app.services.rl_adaptation_service import rl_adaptation_service as _rl
+        _loop = _asyncio.get_event_loop()
+        await _loop.run_in_executor(None, _rl.train_agent, 200)
+        print("✅ RL adaptation agent trained and ready")
+    except Exception as e:
+        print(f"⚠️ RL agent training failed (non-fatal): {e}")
+
     # Startup diagnostics — log Gemini key status so Azure logs show if it's configured
     gemini_key = settings.GEMINI_API_KEY
     print(f"🔑 GEMINI_API_KEY configured: {bool(gemini_key)}, length: {len(gemini_key) if gemini_key else 0}")
@@ -52,14 +64,24 @@ async def lifespan(app: FastAPI):
     # Pre-download and cache the Vosk STT model at startup
     # so it's ready instantly when the first interview starts
     try:
-        import sys, os
-        _ai_engine_dir = os.path.join(os.path.dirname(__file__), "ai-engine")
-        if os.path.isdir(_ai_engine_dir):
-            sys.path.insert(0, os.path.abspath(_ai_engine_dir))
-        from speech_to_text import get_vosk_model, VOSK_AVAILABLE
+        import importlib.util
+        import os
+        _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        _speech_to_text_path = os.path.join(_repo_root, "ai-engine", "speech_to_text.py")
+
+        get_vosk_model = None
+        VOSK_AVAILABLE = False
+        if os.path.isfile(_speech_to_text_path):
+            _spec = importlib.util.spec_from_file_location("speech_to_text", _speech_to_text_path)
+            if _spec and _spec.loader:
+                _speech_to_text = importlib.util.module_from_spec(_spec)
+                _spec.loader.exec_module(_speech_to_text)
+                get_vosk_model = getattr(_speech_to_text, "get_vosk_model", None)
+                VOSK_AVAILABLE = bool(getattr(_speech_to_text, "VOSK_AVAILABLE", False))
+
         if VOSK_AVAILABLE:
             print("⏳ Pre-loading Vosk STT model (this may take a moment on first run)...")
-            model = get_vosk_model()
+            model = get_vosk_model() if get_vosk_model else None
             if model:
                 print("✅ Vosk STT model ready")
             else:

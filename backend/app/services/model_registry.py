@@ -45,6 +45,7 @@ class ModelRegistry:
 
     def __init__(self):
         self._embedding_model = None
+        self._cross_encoder = None
         self._gemini_clients: List = []  # List of genai.Client instances
         self._openrouter_client = None   # OpenAI-compatible client for OpenRouter
         self._vllm_client = None         # OpenAI-compatible client for vLLM
@@ -118,6 +119,18 @@ class ModelRegistry:
             except Exception as e:
                 logger.warning(f"ModelRegistry: SentenceTransformer unavailable: {e}")
         return self._embedding_model
+
+    # ── CrossEncoder (single instance) ────────────
+    @property
+    def cross_encoder(self):
+        if self._cross_encoder is None:
+            try:
+                from sentence_transformers import CrossEncoder
+                self._cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+                logger.info("ModelRegistry: CrossEncoder loaded (shared)")
+            except Exception as e:
+                logger.warning(f"ModelRegistry: CrossEncoder unavailable: {e}")
+        return self._cross_encoder
 
     # ── Gemini clients (one per API key) ─────────────────────────
     def _get_client(self, key_idx: int):

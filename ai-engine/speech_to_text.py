@@ -32,6 +32,7 @@ _vosk_model = None
 VOSK_MODEL_PATH = os.environ.get("VOSK_MODEL_PATH", "")
 # Default model name to download if no path specified
 VOSK_MODEL_NAME = os.environ.get("VOSK_MODEL_NAME", "vosk-model-en-us-0.22")
+VOSK_PARTIAL_WORDS = os.environ.get("VOSK_PARTIAL_WORDS", "false").strip().lower() in ("1", "true", "yes", "on")
 
 
 def get_vosk_model():
@@ -62,7 +63,9 @@ def create_vosk_recognizer(sample_rate: int = 16000):
         return None
     rec = KaldiRecognizer(model, sample_rate)
     rec.SetWords(True)           # include word-level timestamps
-    rec.SetPartialWords(True)    # include partial results
+    # Partial word lattices can grow very large on long streams.
+    # Keep this off by default for better memory stability.
+    rec.SetPartialWords(VOSK_PARTIAL_WORDS)
     return rec
 
 

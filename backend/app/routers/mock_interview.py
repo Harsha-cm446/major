@@ -324,12 +324,14 @@ async def submit_answer(
         )
     else:
         # Two-phase: get instant score first for fast UX
+        live_conf = session.get("current_metrics", {}).get("confidence", None)
         instant_eval = await ai_service.evaluate_answer_instant(
             question=question_doc["question"],
             ideal_answer=question_doc["ideal_answer"],
             candidate_answer=answer_text,
             keywords=question_doc.get("keywords", []),
             round_type=question_doc.get("round", "Technical"),
+            live_confidence=live_conf,
         )
 
         # ── Run deep evaluation + next question generation IN PARALLEL ──

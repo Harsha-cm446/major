@@ -700,6 +700,45 @@ class MultimodalAnalysisEngine:
 
         return result
 
+    def analyze_text_confidence(self, answer: str) -> float:
+        """Analyze text for confidence signals (hedging, filler words, absolute language).
+        Returns a confidence score 0-100.
+        """
+        if not answer:
+            return 50.0
+
+        answer_lower = answer.lower()
+        words = answer_lower.split()
+        total_words = len(words)
+        if total_words == 0:
+            return 50.0
+
+        hedges = ['i think', 'maybe', 'probably', 'might', 'could', 'sort of', 'kind of', 'i guess', "i'm not sure", 'perhaps', 'basically']
+        fillers = ['um', 'uh', 'like', 'you know', 'mean', 'actually', 'literally']
+        absolutes = ['always', 'never', 'must', 'will', 'certainly', 'definitely', 'absolutely']
+        strong_words = ['because', 'therefore', 'consequently', 'clearly', 'specifically', 'in fact']
+
+        hedge_count = sum(1 for h in hedges if h in answer_lower)
+        filler_count = sum(1 for f in fillers if f in words)
+        absolute_count = sum(1 for a in absolutes if a in words)
+        strong_count = sum(1 for s in strong_words if s in answer_lower)
+
+        # Baseline confidence
+        confidence = 75.0
+
+        # Penalties
+        hedge_penalty = (hedge_count / total_words) * 300  # Scale penalty
+        filler_penalty = (filler_count / total_words) * 200
+
+        # Bonuses
+        absolute_bonus = (absolute_count / max(total_words, 1)) * 50
+        strong_bonus = (strong_count / max(total_words, 1)) * 100
+
+        confidence = confidence - hedge_penalty - filler_penalty + absolute_bonus + strong_bonus
+
+        # Smooth out extremes
+        return max(0.0, min(100.0, confidence))
+
     def _default_voice_features(self) -> Dict[str, float]:
         return {
             "pitch_mean": 150,

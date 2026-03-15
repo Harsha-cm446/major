@@ -328,7 +328,8 @@ class PPOAgent:
 
     def get_value(self, state: np.ndarray) -> float:
         """Estimate state value."""
-        return float(state @ self.value_weights + self.value_bias)
+        value = state @ self.value_weights + self.value_bias
+        return float(np.asarray(value).reshape(-1)[0])
 
     def store_transition(
         self, state: np.ndarray, action: int, reward: float,
@@ -359,10 +360,10 @@ class PPOAgent:
             return
 
         states = np.array(self.states)
-        actions = np.array(self.actions)
-        old_log_probs = np.array(self.log_probs)
-        returns = self.compute_returns()
-        values = np.array(self.values)
+        actions = np.array(self.actions, dtype=int).reshape(-1)
+        old_log_probs = np.array(self.log_probs, dtype=float).reshape(-1)
+        returns = self.compute_returns().reshape(-1)
+        values = np.array(self.values, dtype=float).reshape(-1)
         advantages = returns - values
 
         # Normalize advantages
@@ -372,7 +373,7 @@ class PPOAgent:
         for _ in range(self.epochs):
             for i in range(len(states)):
                 state = states[i]
-                action = actions[i]
+                action = int(actions[i])
 
                 # Forward pass
                 logits = state @ self.policy_weights + self.policy_bias
@@ -380,23 +381,26 @@ class PPOAgent:
                 new_log_prob = np.log(probs[action] + 1e-8)
 
                 # PPO ratio
-                ratio = np.exp(new_log_prob - old_log_probs[i])
+                ratio = np.exp(new_log_prob - float(old_log_probs[i]))
                 clipped_ratio = np.clip(ratio, 1 - self.epsilon, 1 + self.epsilon)
-                policy_loss = -min(ratio * advantages[i], clipped_ratio * advantages[i])
+                adv_i = float(advantages[i])
+                policy_loss = -min(ratio * adv_i, clipped_ratio * adv_i)
 
                 # Value loss
-                new_value = float(state @ self.value_weights + self.value_bias)
-                value_loss = (new_value - returns[i]) ** 2
+                new_value_arr = state @ self.value_weights + self.value_bias
+                new_value = float(np.asarray(new_value_arr).reshape(-1)[0])
+                ret_i = float(returns[i])
+                value_loss = (new_value - ret_i) ** 2
 
                 # Gradient update (simplified)
                 # Policy gradient
                 grad = np.zeros(self.action_dim)
-                grad[action] = advantages[i]
+                grad[action] = adv_i
                 policy_grad = np.outer(state, grad)
                 self.policy_weights -= self.lr * policy_grad * 0.01
 
                 # Value gradient
-                value_grad = 2 * (new_value - returns[i]) * state
+                value_grad = 2 * (new_value - ret_i) * state
                 self.value_weights -= self.lr * value_grad.reshape(-1, 1) * 0.01
 
         # Clear buffer
@@ -455,6 +459,8 @@ class RLAdaptationService:
         self.env = InterviewEnvironment()
         self._is_trained = False
         self._session_envs: Dict[str, InterviewEnvironment] = {}
+        # Per-session guardrail metadata for safe adaptation behavior.
+        self._session_adaptation_meta: Dict[str, Dict[str, Any]] = {}
 
     def train_agent(self, episodes: int = 500) -> Dict[str, Any]:
         """Train the RL agent on simulated interviews."""
@@ -482,6 +488,7 @@ class RLAdaptationService:
     def cleanup_session(self, session_id: str):
         """Remove a completed session to free memory."""
         self._session_envs.pop(session_id, None)
+        self._session_adaptation_meta.pop(session_id, None)
 
     def get_next_action(
         self,
@@ -491,30 +498,107 @@ class RLAdaptationService:
         stress: float = 0.3,
     ) -> Dict[str, Any]:
         """Get the next adaptation action for a session."""
+        confidence = self._clamp01(confidence)
+        performance = self._clamp01(performance)
+        stress = self._clamp01(stress)
+
         env = self._session_envs.get(session_id)
         if not env:
-            # Use heuristic fallback
-            return self._heuristic_action(confidence, performance, stress)
+            # No session env — use heuristic with default difficulty index 1 (medium)
+            return self._heuristic_action(confidence, performance, stress, current_difficulty_idx=1)
 
-        # Update environment state with real metrics
+        # Update environment state with Exponential Moving Average for stability
         env.confidence = confidence
-        env.performance = performance
+        env.performance = performance * 0.3 + env.performance * 0.7  # EMA smoothing
         env.stress = stress
 
         state = env._get_state()
 
-        if self._is_trained:
+        if self._is_trained and self._is_signal_reliable(confidence, performance, stress):
             action, _ = self.agent.get_action(state)
         else:
-            # Heuristic policy if not trained
+            # Heuristic policy if not trained or signal reliability is low
             action = self._heuristic_policy(confidence, performance, stress)
+
+        action, override_reason = self._apply_safety_guardrails(
+            session_id, env, int(action), confidence, performance, stress
+        )
+        recommended_difficulty = self._action_to_difficulty(action, env.current_difficulty)
+        self._update_adaptation_meta(session_id, env.question_number, recommended_difficulty)
+
+        rationale = self._explain_action(action, confidence, performance, stress)
+        if override_reason:
+            rationale = f"{rationale} Safety override: {override_reason}."
 
         return {
             "action": int(action),
             "action_name": InterviewEnvironment.ACTIONS.get(action, "unknown"),
-            "recommended_difficulty": self._action_to_difficulty(action, env.current_difficulty),
-            "rationale": self._explain_action(action, confidence, performance, stress),
+            "recommended_difficulty": recommended_difficulty,
+            "rationale": rationale,
         }
+
+    def _clamp01(self, value: float, default: float = 0.5) -> float:
+        """Clamp potentially noisy signal values into [0, 1]."""
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return default
+        if np.isnan(v):
+            return default
+        return max(0.0, min(1.0, v))
+
+    def _is_signal_reliable(self, confidence: float, performance: float, stress: float) -> bool:
+        """Detect low-confidence/noisy signals and gate RL when needed."""
+        if abs(confidence - performance) > 0.55:
+            return False
+        if stress > 0.9 and performance > 0.85:
+            return False
+        # Ambiguous center-zone inputs are safer with heuristic policy.
+        if 0.45 <= confidence <= 0.55 and 0.45 <= performance <= 0.55 and 0.35 <= stress <= 0.65:
+            return False
+        return True
+
+    def _apply_safety_guardrails(
+        self,
+        session_id: str,
+        env: InterviewEnvironment,
+        action: int,
+        confidence: float,
+        performance: float,
+        stress: float,
+    ) -> Tuple[int, str]:
+        """Apply production safety overrides for extreme/noisy adaptation outputs."""
+        # Extreme stress guardrail: avoid harder jumps when stress is already high.
+        if stress >= 0.85 and action == 2:
+            return 5, "high stress detected; switched to supportive action"
+
+        # Low-performance guardrail: prevent accidental harder questions.
+        if performance <= 0.25 and action == 2:
+            return 0, "low performance detected; switched to easier action"
+
+        # Cooldown guardrail: prevent rapid consecutive difficulty jumps.
+        current_diff = self._action_to_difficulty(1, env.current_difficulty)
+        proposed_diff = self._action_to_difficulty(action, env.current_difficulty)
+        meta = self._session_adaptation_meta.setdefault(
+            session_id,
+            {"last_recommended_difficulty": current_diff, "last_change_question": -999},
+        )
+        if proposed_diff != current_diff:
+            q_num = int(env.question_number)
+            if q_num - int(meta.get("last_change_question", -999)) < 2:
+                return 1, "difficulty-change cooldown applied"
+
+        return action, ""
+
+    def _update_adaptation_meta(self, session_id: str, question_number: int, recommended_difficulty: str):
+        """Track last difficulty change for cooldown control."""
+        meta = self._session_adaptation_meta.setdefault(
+            session_id,
+            {"last_recommended_difficulty": recommended_difficulty, "last_change_question": -999},
+        )
+        if recommended_difficulty != meta.get("last_recommended_difficulty"):
+            meta["last_change_question"] = int(question_number)
+        meta["last_recommended_difficulty"] = recommended_difficulty
 
     def record_response(
         self, session_id: str, score: float
@@ -567,12 +651,20 @@ class RLAdaptationService:
             return 4  # Follow-up (probe deeper)
         return 1  # Same difficulty
 
-    def _heuristic_action(self, confidence: float, performance: float, stress: float) -> Dict[str, Any]:
+    def _heuristic_action(
+        self,
+        confidence: float,
+        performance: float,
+        stress: float,
+        current_difficulty_idx: int = 1,
+    ) -> Dict[str, Any]:
+        """Heuristic fallback action. Uses current_difficulty_idx to compute
+        actual difficulty string instead of hardcoding 'medium'."""
         action = self._heuristic_policy(confidence, performance, stress)
         return {
             "action": action,
             "action_name": InterviewEnvironment.ACTIONS.get(action, "unknown"),
-            "recommended_difficulty": "medium",
+            "recommended_difficulty": self._action_to_difficulty(action, current_difficulty_idx),
             "rationale": self._explain_action(action, confidence, performance, stress),
         }
 

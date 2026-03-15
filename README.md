@@ -96,7 +96,7 @@ GEMINI_FALLBACK_MODELS=
 
 # OpenRouter API (fallback when Gemini quota exhausted)
 OPENROUTER_API_KEY=your-openrouter-api-key
-OPENROUTER_FALLBACK_MODELS=nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free,mistralai/mistral-small-3.1-24b-instruct:free,meta-llama/llama-3.3-70b-instruct:free
+OPENROUTER_FALLBACK_MODELS=nvidia/nemotron-3-nano-30b-a3b:free,stepfun/step-3.5-flash:free
 ```
 
 ### 4. Run Backend

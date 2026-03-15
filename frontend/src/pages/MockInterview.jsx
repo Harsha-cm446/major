@@ -76,29 +76,72 @@ export default function MockInterview() {
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
+  const getFullscreenElement = useCallback(() => {
+    return (
+      document.fullscreenElement
+      || document.webkitFullscreenElement
+      || document.mozFullScreenElement
+      || document.msFullscreenElement
+      || null
+    );
+  }, []);
+
+  const requestFullscreenSafe = useCallback(async () => {
+    if (getFullscreenElement()) return true;
+    const el = document.documentElement;
+    const request = el.requestFullscreen
+      || el.webkitRequestFullscreen
+      || el.mozRequestFullScreen
+      || el.msRequestFullscreen;
+    if (!request) return false;
+    try {
+      await request.call(el);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [getFullscreenElement]);
+
+  const exitFullscreenSafe = useCallback(async () => {
+    const exit = document.exitFullscreen
+      || document.webkitExitFullscreen
+      || document.mozCancelFullScreen
+      || document.msExitFullscreen;
+    if (!exit) return;
+    try {
+      await exit.call(document);
+    } catch {
+      // Ignore browser-specific fullscreen exit errors.
+    }
+  }, []);
+
   // Sync fullscreen state when Esc key or browser exits fullscreen
   useEffect(() => {
-    const onFSChange = () => setIsFullscreen(!!document.fullscreenElement);
+    const onFSChange = () => setIsFullscreen(!!getFullscreenElement());
     document.addEventListener('fullscreenchange', onFSChange);
-    return () => document.removeEventListener('fullscreenchange', onFSChange);
-  }, []);
+    document.addEventListener('webkitfullscreenchange', onFSChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFSChange);
+      document.removeEventListener('webkitfullscreenchange', onFSChange);
+    };
+  }, [getFullscreenElement]);
 
   // Auto-exit fullscreen when practice ends
   useEffect(() => {
     if (['done', 'failed'].includes(phase)) {
-      if (document.fullscreenElement) {
-        document.exitFullscreen().catch(() => {});
+      if (getFullscreenElement()) {
+        exitFullscreenSafe();
       }
     }
-  }, [phase]);
+  }, [phase, getFullscreenElement, exitFullscreenSafe]);
 
   const toggleFullscreen = useCallback(() => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
+    if (!getFullscreenElement()) {
+      requestFullscreenSafe();
     } else {
-      document.exitFullscreen().catch(() => {});
+      exitFullscreenSafe();
     }
-  }, []);
+  }, [getFullscreenElement, requestFullscreenSafe, exitFullscreenSafe]);
   const [endingInterview, setEndingInterview] = useState(false);
   const gazeWarningStartRef = useRef(null);
 
@@ -208,12 +251,22 @@ export default function MockInterview() {
 
   const startVoskStreaming = useCallback(async () => {
     try {
+      const requestedRate = 16000;
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { channelCount: 1, sampleRate: requestedRate, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       sttStreamRef.current = stream;
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: requestedRate });
       audioContextRef.current = audioContext;
+      const actualSampleRate = Math.round(audioContext.sampleRate || requestedRate);
+
+      // Keep backend recognizer sample rate aligned with actual browser capture rate.
+      if (sttWsRef.current && sttWsRef.current.readyState === WebSocket.OPEN) {
+        try {
+          sttWsRef.current.send(JSON.stringify({ type: 'config', sample_rate: actualSampleRate }));
+        } catch {}
+      }
+
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       audioProcessorRef.current = processor;
@@ -709,9 +762,7 @@ export default function MockInterview() {
     setPermissionError('');
 
     // Request fullscreen immediately inside click handler (requires user gesture)
-    if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
-      document.documentElement.requestFullscreen().catch(() => {});
-    }
+    requestFullscreenSafe();
 
     // Request camera + mic permissions first (mobile-friendly constraints)
     try {
@@ -1049,6 +1100,8 @@ export default function MockInterview() {
             )}
 
             <button
+              onMouseDown={requestFullscreenSafe}
+              onTouchStart={requestFullscreenSafe}
               onClick={startInterview}
               disabled={loading}
               className="w-full gradient-bg text-white py-3.5 rounded-xl font-semibold flex items-center justify-center gap-2 hover:opacity-90 transition-all disabled:opacity-50 shadow-md hover:shadow-lg"
