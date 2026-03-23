@@ -488,31 +488,21 @@ export default function LiveInterview() {
     peerConnectionRef.current = pc;
 
     // Collect incoming streams — identify by track kind and stream id
-    const assignedStreams = new Map(); // stream.id -> 'camera' | 'screen'
-    let cameraAssigned = false;
-
     pc.ontrack = (event) => {
       const stream = event.streams[0];
       if (!stream) return;
 
       console.log('[HR WebRTC] ontrack:', event.track.kind, 'label:', event.track.label, 'stream:', stream.id);
 
+      const hasAudio = stream.getAudioTracks().length > 0;
+      let streamType = hasAudio ? 'camera' : 'screen';
+
       const trackLabel = (event.track.label || '').toLowerCase();
-      const isScreenTrack = trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('monitor') || trackLabel.includes('window');
+      if (trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('monitor')) streamType = 'screen';
+      if (trackLabel.includes('camera') || trackLabel.includes('mic')) streamType = 'camera';
 
-      if (!assignedStreams.has(stream.id)) {
-        if (isScreenTrack) {
-          assignedStreams.set(stream.id, 'screen');
-        } else if (!cameraAssigned) {
-          assignedStreams.set(stream.id, 'camera');
-          cameraAssigned = true;
-        } else {
-          assignedStreams.set(stream.id, 'screen');
-        }
-      }
+      console.log('[HR WebRTC] Stream type identified as:', streamType, 'hasAudio:', hasAudio);
 
-      const streamType = assignedStreams.get(stream.id);
-      console.log('[HR WebRTC] Stream type:', streamType, 'track:', event.track.kind);
       if (streamType === 'camera') {
         setCameraStream(stream);
       } else {
@@ -695,34 +685,23 @@ export default function LiveInterview() {
     const queued = galleryICEQueueRef.current[token] || [];
     galleryICEQueueRef.current[token] = [];
 
-    const assignedStreams = new Map();
-    let cameraAssigned = false;
-
     pc.ontrack = (event) => {
       const stream = event.streams[0];
       if (!stream) return;
 
+      const hasAudio = stream.getAudioTracks().length > 0;
+      let streamType = hasAudio ? 'camera' : 'screen';
+
       const trackLabel = (event.track.label || '').toLowerCase();
-      const isScreenTrack = trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('monitor') || trackLabel.includes('window');
+      if (trackLabel.includes('screen') || trackLabel.includes('display') || trackLabel.includes('monitor')) streamType = 'screen';
+      if (trackLabel.includes('camera') || trackLabel.includes('mic')) streamType = 'camera';
 
-      if (!assignedStreams.has(stream.id)) {
-        if (isScreenTrack) {
-          assignedStreams.set(stream.id, 'screen');
-        } else if (!cameraAssigned) {
-          assignedStreams.set(stream.id, 'camera');
-          cameraAssigned = true;
-        } else {
-          assignedStreams.set(stream.id, 'screen');
-        }
-      }
-
-      const streamType = assignedStreams.get(stream.id);
       setGalleryStreams(prev => ({
         ...prev,
         [token]: {
           ...prev[token],
           name: candidateName,
-          [streamType === 'camera' ? 'camera' : 'screen']: stream,
+          [streamType]: stream,
         },
       }));
     };
