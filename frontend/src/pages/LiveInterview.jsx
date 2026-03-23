@@ -51,28 +51,17 @@ const ICE_SERVERS = [
 
 // ── Gallery Tile: auto-attaches stream to video ─────────────────────
 const GalleryVideoTile = React.memo(function GalleryVideoTile({ token, stream, candidateName, type, onEnlarge }) {
-  const videoRef = useRef(null);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !stream) return;
-    // Only reassign if stream actually changed — prevents flicker on re-renders
-    if (video.srcObject && video.srcObject.id === stream.id) return;
-    video.srcObject = stream;
-    video.play().catch(() => {});
-  }, [stream]);
-
-  useEffect(() => {
-    // Clear srcObject when stream is removed
-    if (!stream && videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+  const videoCallbackRef = useCallback((node) => {
+    if (!node || !stream) return;
+    if (node.srcObject?.id === stream.id) return;
+    node.srcObject = stream;
+    node.play().catch(() => {});
   }, [stream]);
 
   return (
     <div className="absolute inset-0">
       {stream ? (
-        <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full ${type === 'screen' ? 'object-contain' : 'object-cover'}`} />
+        <video ref={videoCallbackRef} autoPlay playsInline muted className={`w-full h-full ${type === 'screen' ? 'object-contain' : 'object-cover'}`} />
       ) : (
         <div className="w-full h-full flex flex-col items-center justify-center text-gray-500 bg-gray-900">
           {type === 'screen' ? <Monitor size={20} className="mb-1 text-gray-600" /> : <VideoOff size={20} className="mb-1 text-gray-600" />}
@@ -136,6 +125,7 @@ export default function LiveInterview() {
 
   // ── Live Feed State ─────────────────────────────────
   const [watchingCandidate, setWatchingCandidate] = useState(null); // token of candidate being watched
+  const watchingCandidateRef = useRef(null);
   const [streamableCandidates, setStreamableCandidates] = useState({}); // conn_id -> { name, has_camera, has_screen }
   const wsRef = useRef(null);
   const peerConnectionRef = useRef(null);
@@ -303,6 +293,7 @@ export default function LiveInterview() {
           Object.entries(data.stream_status).forEach(([connId, info]) => {
             if ((info.has_camera || info.has_screen) && !galleryPeersRef.current[connId]) {
               galleryPeersRef.current[connId] = { pc: null, name: info.name || connId };
+              galleryICEQueueRef.current[connId] = [];
               // Immediately request stream — don't wait for tab switch
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: 'request_stream', target: connId }));
@@ -319,6 +310,7 @@ export default function LiveInterview() {
           Object.entries(data.streams).forEach(([connId, info]) => {
             if ((info.has_camera || info.has_screen) && !galleryPeersRef.current[connId]) {
               galleryPeersRef.current[connId] = { pc: null, name: info.name || connId };
+              galleryICEQueueRef.current[connId] = [];
               // Immediately request stream — don't wait for tab switch
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: 'request_stream', target: connId }));
@@ -344,15 +336,12 @@ export default function LiveInterview() {
           const pc = peerConnectionRef.current;
           const pcDead = !pc || pc.connectionState === 'failed' || pc.connectionState === 'closed';
           // Single-view: re-request if watching this candidate and connection died
-          setWatchingCandidate((currentWatching) => {
-            if (currentWatching === data.from && pcDead) {
+          if (watchingCandidateRef.current === data.from && pcDead) {
               console.log('[HR WS] Auto-re-requesting stream for watched candidate:', data.from);
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
               }
-            }
-            return currentWatching;
-          });
+          }
           // Gallery: proactively connect to this candidate
           const galleryEntry = galleryPeersRef.current[data.from];
           if (galleryEntry !== undefined) {
@@ -361,6 +350,7 @@ export default function LiveInterview() {
             if (galleryPcDead) {
               console.log('[HR WS] Re-requesting dead gallery stream for:', data.from);
               galleryPeersRef.current[data.from] = { pc: null, name: data.name || galleryEntry.name };
+              galleryICEQueueRef.current[data.from] = [];
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
               }
@@ -369,6 +359,7 @@ export default function LiveInterview() {
             // New candidate — proactively pre-connect so gallery view is instant
             console.log('[HR WS] Proactive gallery pre-connect for:', data.from, data.name);
             galleryPeersRef.current[data.from] = { pc: null, name: data.name || data.from };
+            galleryICEQueueRef.current[data.from] = [];
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
             }
@@ -394,40 +385,33 @@ export default function LiveInterview() {
         // so when they reconnect and send stream_ready, we can auto-re-request
         console.log('[HR WS] Candidate disconnected:', data.conn_id, data.name);
         cleanupGalleryPeer(data.conn_id);
-        // If watching this candidate in single view, clean up the peer connection
-        setWatchingCandidate((currentWatching) => {
-          if (currentWatching === data.conn_id) {
+        if (watchingCandidateRef.current === data.conn_id) {
+            watchingCandidateRef.current = null;
+            setWatchingCandidate(null);
             if (peerConnectionRef.current) {
-              peerConnectionRef.current.close();
-              peerConnectionRef.current = null;
+                peerConnectionRef.current.close();
+                peerConnectionRef.current = null;
             }
             setCameraStream(null);
             setScreenStream(null);
-          }
-          return currentWatching;
-        });
-        break;
-      case 'webrtc_offer':
-        console.log('[HR WS] Got WebRTC offer from:', data.from);
-        if (galleryPeersRef.current[data.from] !== undefined) {
-          // Already registered as gallery peer
-          handleGalleryOffer(data).catch(e => console.error('[Gallery Offer] Error:', e));
-        } else {
-          // Check if this is a candidate we're watching in single-view
-          setWatchingCandidate((currentWatching) => {
-            if (currentWatching === data.from) {
-              // Route to single-view handler
-              handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer] Error:', e));
-            } else {
-              // Unknown candidate — auto-register as gallery peer so all streams appear
-              console.log('[HR WS] Auto-routing unknown offer to gallery:', data.from);
-              galleryPeersRef.current[data.from] = { pc: null, name: data.from };
-              handleGalleryOffer(data).catch(e => console.error('[Gallery Offer] Error:', e));
-            }
-            return currentWatching;
-          });
         }
         break;
+      case 'webrtc_offer': {
+        console.log('[HR WS] Got WebRTC offer from:', data.from);
+        const isWatching = watchingCandidateRef.current === data.from;
+        const inGallery  = galleryPeersRef.current[data.from] !== undefined;
+
+        if (inGallery || !isWatching) {
+            if (!galleryPeersRef.current[data.from]) {
+                galleryPeersRef.current[data.from] = { pc: null, name: data.from };
+                galleryICEQueueRef.current[data.from] = [];
+            }
+            handleGalleryOffer(data).catch(e => console.error('[Gallery Offer]', e));
+        } else {
+            handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer]', e));
+        }
+        break;
+      }
       case 'ice_candidate':
         if (galleryPeersRef.current[data.from]?.pc) {
           handleGalleryICE(data).catch(e => console.error('[Gallery ICE] Error:', e));
@@ -616,6 +600,7 @@ export default function LiveInterview() {
       return;
     }
     console.log('[HR] Requesting stream from:', candidateToken);
+    watchingCandidateRef.current = candidateToken;
     setWatchingCandidate(candidateToken);
     setCameraStream(null);
     setScreenStream(null);
@@ -647,6 +632,7 @@ export default function LiveInterview() {
     peerConnectionRef.current = null;
     setCameraStream(null);
     setScreenStream(null);
+    watchingCandidateRef.current = null;
     setWatchingCandidate(null);
   }, []);
 
@@ -723,6 +709,7 @@ export default function LiveInterview() {
         setTimeout(() => {
           if (wsRef.current?.readyState === WebSocket.OPEN) {
             galleryPeersRef.current[token] = { pc: null, name: candidateName };
+            galleryICEQueueRef.current[token] = [];
             wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
           }
         }, 1500);
@@ -739,6 +726,7 @@ export default function LiveInterview() {
               cleanupGalleryPeer(token);
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 galleryPeersRef.current[token] = { pc: null, name: candidateName };
+                galleryICEQueueRef.current[token] = [];
                 wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
               }
             }
@@ -759,6 +747,7 @@ export default function LiveInterview() {
           setTimeout(() => {
             if (wsRef.current?.readyState === WebSocket.OPEN) {
               galleryPeersRef.current[token] = { pc: null, name: candidateName };
+              galleryICEQueueRef.current[token] = [];
               wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
             }
           }, 1000);
@@ -842,6 +831,7 @@ export default function LiveInterview() {
       if (needsConnect) {
         const name = info.name || token;
         galleryPeersRef.current[token] = { pc: null, name };
+        galleryICEQueueRef.current[token] = [];
         wsRef.current.send(JSON.stringify({ type: 'request_stream', target: token }));
       }
     });

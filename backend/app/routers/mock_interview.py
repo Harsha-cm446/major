@@ -233,6 +233,30 @@ async def start_mock_interview(data: MockInterviewStart, user: dict = Depends(ge
 
 # ── Submit Answer (optimized: parallel eval + question gen) ──
 
+async def _enrich_evaluation_in_background(
+    db, session_id, question_id, q_doc, answer_text, instant_result, round_type, scoring_weights=None
+):
+    try:
+        from bson import ObjectId
+        deep = await asyncio.wait_for(
+            ai_service.evaluate_answer_deep(
+                question=q_doc["question"],
+                ideal_answer=q_doc.get("ideal_answer", ""),
+                candidate_answer=answer_text,
+                keywords=q_doc.get("keywords", []),
+                instant_result=instant_result,
+                round_type=round_type,
+                scoring_weights=scoring_weights,
+            ),
+            timeout=30.0,
+        )
+        await db.mock_sessions.update_one(
+            {"_id": ObjectId(session_id), "responses.question_id": question_id},
+            {"$set": {"responses.$.evaluation": deep}}
+        )
+    except Exception:
+        pass
+
 @router.post("/{session_id}/answer")
 async def submit_answer(
     session_id: str,
@@ -345,15 +369,7 @@ async def submit_answer(
         prev_answers = [r["answer_text"] for r in all_responses] + [answer_text]
 
         # Fire both tasks in parallel
-        deep_eval_task = ai_service.evaluate_answer_deep(
-            question=question_doc["question"],
-            ideal_answer=question_doc["ideal_answer"],
-            candidate_answer=answer_text,
-            keywords=question_doc.get("keywords", []),
-            instant_result=instant_eval,
-            round_type=question_doc.get("round", "Technical"),
-        )
-
+        # Instead of blocking on deep_eval, we rely on instant_eval and fire deep eval in background
         next_q_task = ai_service.generate_question(
             job_role=session["job_role"],
             difficulty=next_difficulty,
@@ -370,11 +386,23 @@ async def submit_answer(
         )
 
         try:
-            deep_eval, next_q_data = await asyncio.gather(deep_eval_task, next_q_task)
-            evaluation = deep_eval
+            next_q_data = await next_q_task
         except Exception:
-            evaluation = instant_eval
             next_q_data = None
+
+        evaluation = instant_eval
+
+        # Fire deep eval in background
+        background_tasks.add_task(
+            _enrich_evaluation_in_background,
+            db, session_id,
+            answer.question_id,
+            question_doc,
+            answer_text,
+            instant_eval,
+            question_doc.get("round", "Technical"),
+            session.get("scoring_weights")
+        )
 
     # Save response
     response_doc = {

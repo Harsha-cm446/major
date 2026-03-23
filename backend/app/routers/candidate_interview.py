@@ -47,6 +47,31 @@ router = APIRouter(prefix="/api/candidate-interview", tags=["Candidate AI Interv
 DEFAULT_TECH_CUTOFF = 70.0
 
 
+# ── Helper ────────────────────────────────────────────
+async def _enrich_evaluation_in_background(
+    db, session_id, question_id, q_doc, answer_text, instant_result, round_type, scoring_weights=None
+):
+    try:
+        deep = await asyncio.wait_for(
+            ai_service.evaluate_answer_deep(
+                question=q_doc["question"],
+                ideal_answer=q_doc.get("ideal_answer", ""),
+                candidate_answer=answer_text,
+                keywords=q_doc.get("keywords", []),
+                instant_result=instant_result,
+                round_type=round_type,
+                scoring_weights=scoring_weights,
+            ),
+            timeout=30.0,
+        )
+        await db.candidate_ai_sessions.update_one(
+            {"_id": ObjectId(session_id), "responses.question_id": question_id},
+            {"$set": {"responses.$.evaluation": deep}}
+        )
+    except Exception:
+        pass
+
+
 # ── Schemas ───────────────────────────────────────────
 
 class CandidateStartRequest(BaseModel):
@@ -373,7 +398,7 @@ async def start_candidate_interview(token: str, body: CandidateStartRequest):
 # ── POST /{token}/answer (parallel eval + question gen) ──
 
 @router.post("/{token}/answer")
-async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
+async def submit_candidate_answer(token: str, body: CandidateAnswerRequest, background_tasks: BackgroundTasks):
     """Evaluate answer and return next question — optimized with parallel operations."""
     db = get_database()
     processing_start = time.time()
@@ -478,16 +503,6 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
         prev_questions = [q["question"] for q in ai_session["questions"]] + other_candidate_questions
         prev_answers = [r["answer_text"] for r in all_responses] + [answer_text]
 
-        deep_eval_task = ai_service.evaluate_answer_deep(
-            question=q_doc["question"],
-            ideal_answer=q_doc.get("ideal_answer", ""),
-            candidate_answer=answer_text,
-            keywords=q_doc.get("keywords", []),
-            instant_result=instant_eval,
-            round_type=q_doc.get("round", "Technical"),
-            scoring_weights=scoring_weights,
-        )
-
         next_q_task = ai_service.generate_question(
             job_role=ai_session["job_role"],
             difficulty=next_difficulty,
@@ -503,11 +518,23 @@ async def submit_candidate_answer(token: str, body: CandidateAnswerRequest):
         )
 
         try:
-            deep_eval, next_q_data = await asyncio.gather(deep_eval_task, next_q_task)
-            evaluation = deep_eval
+            next_q_data = await next_q_task
         except Exception:
-            evaluation = instant_eval
             next_q_data = None
+
+        evaluation = instant_eval
+
+        # Fire deep eval in background
+        background_tasks.add_task(
+            _enrich_evaluation_in_background,
+            db, str(ai_session["_id"]),
+            body.question_id,
+            q_doc,
+            answer_text,
+            instant_eval,
+            q_doc.get("round", "Technical"),
+            scoring_weights
+        )
 
     # Save response
     response_doc = {
