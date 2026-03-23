@@ -1765,85 +1765,83 @@ export default function LiveInterview() {
             hasCamera: streamableCandidates[c.candidate_token]?.has_camera,
             hasScreen: streamableCandidates[c.candidate_token]?.has_screen,
           }));
-
-        // Build flat list of all individual feed tiles
-        const allTiles = [];
-        inProgressCandidates.forEach(c => {
-          if (c.hasCamera || galleryStreams[c.token]?.camera) {
-            allTiles.push({ token: c.token, name: c.name, type: 'camera', stream: galleryStreams[c.token]?.camera || null });
-          }
-          if (c.hasScreen || galleryStreams[c.token]?.screen) {
-            allTiles.push({ token: c.token, name: c.name, type: 'screen', stream: galleryStreams[c.token]?.screen || null });
-          }
-          // If candidate has neither flag but has a gallery entry, show camera placeholder
-          if (!c.hasCamera && !c.hasScreen && !galleryStreams[c.token]?.camera && !galleryStreams[c.token]?.screen) {
-            allTiles.push({ token: c.token, name: c.name, type: 'camera', stream: null });
-          }
-        });
-
-        const totalPages = Math.max(1, Math.ceil(allTiles.length / (GALLERY_PAGE_SIZE * 2))); // 2 tiles per candidate previously
+        const totalPages = Math.max(1, Math.ceil(inProgressCandidates.length / GALLERY_PAGE_SIZE));
         const currentPage = Math.min(galleryPage, totalPages - 1);
-        const tilesPerPage = GALLERY_PAGE_SIZE * 2;
-        const pageTiles = allTiles.slice(currentPage * tilesPerPage, (currentPage + 1) * tilesPerPage);
+        const pageCandidates = inProgressCandidates.slice(currentPage * GALLERY_PAGE_SIZE, (currentPage + 1) * GALLERY_PAGE_SIZE);
 
         return (
           <div>
-            {allTiles.length === 0 ? (
+            {inProgressCandidates.length === 0 ? (
               <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
                 <VideoOff size={48} className="mx-auto text-gray-300 mb-4" />
-                <h2 className="text-lg font-semibold text-gray-700 mb-2">No live streams available</h2>
+                <h2 className="text-lg font-semibold text-gray-700 mb-2">No live candidates available</h2>
                 <p className="text-gray-400 text-sm">Candidates will appear here once they start their interview with camera enabled.</p>
               </div>
             ) : (
               <>
-                {/* Flat gallery grid — each feed is its own tile */}
-                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
-                  {pageTiles.map(tile => (
-                    <div
-                      key={`${tile.token}-${tile.type}`}
-                      className="bg-gray-800 rounded-xl overflow-hidden cursor-pointer group hover:ring-2 hover:ring-primary-400 transition-all hover:scale-[1.02]"
-                      onClick={() => setEnlargedFeed({ token: tile.token, type: tile.type })}
-                    >
-                      {/* Video area */}
-                      <div className="relative bg-black" style={{ aspectRatio: '16/10' }}>
-                        <GalleryVideoTile
-                          token={tile.token}
-                          stream={tile.stream}
-                          candidateName={tile.name}
-                          type={tile.type}
-                          onEnlarge={() => setEnlargedFeed({ token: tile.token, type: tile.type })}
-                        />
-                        {/* Enlarge icon on hover */}
-                        <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition">
-                          <div className="p-1.5 bg-black/60 rounded-lg">
-                            <Maximize2 size={14} className="text-white" />
+                {/* Unified Candidate Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {pageCandidates.map(candidate => {
+                    const cameraStream = galleryStreams[candidate.token]?.camera || null;
+                    const screenStream = galleryStreams[candidate.token]?.screen || null;
+                    const cHasCamera = candidate.hasCamera || !!cameraStream;
+                    const cHasScreen = candidate.hasScreen || !!screenStream;
+                    const activeFeeds = [];
+                    if (cHasCamera) activeFeeds.push({ type: 'camera', stream: cameraStream });
+                    if (cHasScreen) activeFeeds.push({ type: 'screen', stream: screenStream });
+                    if (activeFeeds.length === 0) activeFeeds.push({ type: 'camera', stream: null }); // Fallback
+                    
+                    return (
+                      <div
+                        key={candidate.token}
+                        className="bg-gray-800 rounded-xl overflow-hidden cursor-pointer group hover:ring-2 hover:ring-primary-400 transition-all hover:scale-[1.02] flex flex-col"
+                        onClick={() => setEnlargedFeed(candidate.token)}
+                      >
+                        {/* Video area */}
+                        <div className={`relative bg-black grid ${activeFeeds.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`} style={{ aspectRatio: '16/9' }}>
+                          {activeFeeds.map((feed, idx) => (
+                            <div key={`${candidate.token}-${feed.type}-${idx}`} className="relative h-full w-full border-r border-gray-900 last:border-0 bg-gray-900">
+                                <GalleryVideoTile
+                                  token={candidate.token}
+                                  stream={feed.stream}
+                                  candidateName={''}
+                                  type={feed.type}
+                                  onEnlarge={() => setEnlargedFeed(candidate.token)}
+                                />
+                            </div>
+                          ))}
+                          {/* LIVE badge (if any active stream) */}
+                          {(cameraStream || screenStream) && (
+                            <div className="absolute top-2 right-2 group-hover:top-auto group-hover:bottom-2 group-hover:right-2 transition-all opacity-0 group-hover:opacity-100 z-10">
+                              <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded flex items-center space-x-1">
+                                <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
+                                <span>LIVE</span>
+                              </span>
+                            </div>
+                          )}
+                          {/* Enlarge icon on center screen on hover */}
+                          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition pointer-events-none z-10">
+                            <div className="p-2 bg-black/60 rounded-full">
+                              <Maximize2 size={24} className="text-white" />
+                            </div>
                           </div>
                         </div>
-                        {/* LIVE badge */}
-                        {tile.stream && (
-                          <div className="absolute top-2 right-2 group-hover:top-auto group-hover:bottom-8 group-hover:right-2 transition-all">
-                            <span className="bg-red-500 text-white text-[9px] px-1.5 py-0.5 rounded flex items-center space-x-1">
-                              <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>
-                              <span>LIVE</span>
-                            </span>
+                        {/* Footer: candidate name + active feeds */}
+                        <div className="flex items-center justify-between px-3 py-2 bg-gray-900">
+                          <div className="flex items-center space-x-2 min-w-0">
+                            <div className="w-5 h-5 rounded-full bg-primary-600 flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">
+                              {candidate.name?.[0]?.toUpperCase() || '?'}
+                            </div>
+                            <span className="text-white text-xs font-medium truncate">{candidate.name}</span>
                           </div>
-                        )}
-                      </div>
-                      {/* Footer: candidate name + type */}
-                      <div className="flex items-center justify-between px-3 py-2 bg-gray-900">
-                        <div className="flex items-center space-x-2 min-w-0">
-                          <div className="w-5 h-5 rounded-full bg-primary-600 flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">
-                            {tile.name?.[0]?.toUpperCase() || '?'}
+                          <div className="flex items-center space-x-2 text-gray-400 text-[10px] flex-shrink-0">
+                            {cHasCamera && <Video size={10} className={cameraStream ? 'text-primary-400' : ''} />}
+                            {cHasScreen && <Monitor size={10} className={screenStream ? 'text-primary-400' : ''} />}
                           </div>
-                          <span className="text-white text-xs font-medium truncate">{tile.name}</span>
                         </div>
-                        <span className="flex items-center space-x-1 text-gray-400 text-[10px] flex-shrink-0 ml-2">
-                          {tile.type === 'screen' ? <Monitor size={10} /> : <Video size={10} />}
-                          <span className="capitalize">{tile.type}</span>
-                        </span>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* Pagination */}
@@ -1885,39 +1883,38 @@ export default function LiveInterview() {
 
                 {/* Tile count info */}
                 <div className="text-center mt-3 text-xs text-gray-400">
-                  Showing {pageTiles.length} feed{pageTiles.length !== 1 ? 's' : ''} from {inProgressCandidates.length} live candidate{inProgressCandidates.length !== 1 ? 's' : ''}
+                  Showing {pageCandidates.length} candidate{pageCandidates.length !== 1 ? 's' : ''} from {inProgressCandidates.length} live candidate{inProgressCandidates.length !== 1 ? 's' : ''}
                 </div>
               </>
             )}
 
             {/* ── Enlarged Feed Modal ──────────────── */}
             {enlargedFeed && (() => {
-              const gs = galleryStreams[enlargedFeed.token];
-              const feedStream = gs?.[enlargedFeed.type] || null;
-              const candidateInfo = inProgressCandidates.find(c => c.token === enlargedFeed.token);
-              const candidateName = candidateInfo?.name || gs?.name || enlargedFeed.token;
-              const feedLabel = enlargedFeed.type === 'screen' ? 'Screen' : 'Camera';
-              const feedIcon = enlargedFeed.type === 'screen' ? <Monitor size={14} /> : <Video size={14} />;
-              const objectFit = enlargedFeed.type === 'screen' ? 'object-contain' : 'object-cover';
+              const candidateToken = typeof enlargedFeed === 'string' ? enlargedFeed : enlargedFeed.token;
+              const gs = galleryStreams[candidateToken];
+              const candidateInfo = inProgressCandidates.find(c => c.token === candidateToken);
+              const candidateName = candidateInfo?.name || gs?.name || candidateToken;
+              
+              const cameraStream = gs?.camera || null;
+              const screenStream = gs?.screen || null;
+              const cHasCamera = candidateInfo?.hasCamera || !!cameraStream;
+              const cHasScreen = candidateInfo?.hasScreen || !!screenStream;
+              const activeFeeds = [];
+              if (cHasCamera || (!cHasCamera && !cHasScreen)) activeFeeds.push({ type: 'camera', stream: cameraStream, label: 'Camera', icon: <Video size={14} /> });
+              if (cHasScreen) activeFeeds.push({ type: 'screen', stream: screenStream, label: 'Screen', icon: <Monitor size={14} /> });
 
-              // Navigation: find current index in allTiles and enable prev/next
-              const currentIdx = allTiles.findIndex(t => t.token === enlargedFeed.token && t.type === enlargedFeed.type);
+              // Navigation: find current index in inProgressCandidates and enable prev/next
+              const currentIdx = inProgressCandidates.findIndex(c => c.token === candidateToken);
               const hasPrev = currentIdx > 0;
-              const hasNext = currentIdx < allTiles.length - 1;
+              const hasNext = currentIdx < inProgressCandidates.length - 1;
 
               const goToPrev = (e) => {
                 e.stopPropagation();
-                if (hasPrev) {
-                  const prev = allTiles[currentIdx - 1];
-                  setEnlargedFeed({ token: prev.token, type: prev.type });
-                }
+                if (hasPrev) setEnlargedFeed(inProgressCandidates[currentIdx - 1].token);
               };
               const goToNext = (e) => {
                 e.stopPropagation();
-                if (hasNext) {
-                  const next = allTiles[currentIdx + 1];
-                  setEnlargedFeed({ token: next.token, type: next.type });
-                }
+                if (hasNext) setEnlargedFeed(inProgressCandidates[currentIdx + 1].token);
               };
 
               return (
@@ -1936,10 +1933,16 @@ export default function LiveInterview() {
                           </div>
                           <div>
                             <h3 className="text-white text-lg font-bold">{candidateName}</h3>
-                            <span className="text-gray-300 text-sm flex items-center space-x-1">
-                              {feedIcon}
-                              <span>{feedLabel} Feed</span>
-                              {currentIdx >= 0 && <span className="text-gray-500 ml-2">({currentIdx + 1} / {allTiles.length})</span>}
+                            <span className="text-gray-300 text-sm flex items-center space-x-3">
+                              <span className="flex items-center space-x-1">
+                                <Video size={14} className={cameraStream ? 'text-green-400' : ''} />
+                                <span>{cHasCamera ? 'Camera Active' : 'No Camera'}</span>
+                              </span>
+                              <span className="flex items-center space-x-1">
+                                <Monitor size={14} className={screenStream ? 'text-green-400' : ''} />
+                                <span>{cHasScreen ? 'Screen Active' : 'No Screen'}</span>
+                              </span>
+                              {currentIdx >= 0 && <span className="text-gray-500 ml-2">({currentIdx + 1} / {inProgressCandidates.length})</span>}
                             </span>
                           </div>
                         </div>
@@ -1961,10 +1964,14 @@ export default function LiveInterview() {
                       </div>
                     </div>
 
-                    {/* Single enlarged video */}
-                    <div className={`relative ${isFullscreen ? 'flex-1 px-6 pb-6' : ''}`}>
-                      <div className="relative bg-gray-900 rounded-xl overflow-hidden" style={{ aspectRatio: isFullscreen ? undefined : '16/9', height: isFullscreen ? '100%' : undefined }}>
-                        <EnlargedVideo stream={feedStream} label={feedLabel} icon={feedIcon} objectFit={objectFit} />
+                    {/* Unified Enlarged videos */}
+                    <div className={`relative flex flex-col items-center justify-center ${isFullscreen ? 'flex-1 px-6 pb-6' : ''}`}>
+                      <div className={`relative bg-gray-900 rounded-xl overflow-hidden grid ${activeFeeds.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} gap-1`} style={{ width: '100%', height: isFullscreen ? '100%' : 'auto', aspectRatio: isFullscreen ? undefined : (activeFeeds.length > 1 ? '32/9' : '16/9') }}>
+                        {activeFeeds.map((feed, idx) => (
+                          <div key={idx} className="relative h-full w-full bg-black">
+                            <EnlargedVideo stream={feed.stream} label={feed.label} icon={feed.icon} objectFit={feed.type === 'screen' ? 'object-contain' : 'object-cover'} />
+                          </div>
+                        ))}
                       </div>
 
                       {/* Prev / Next arrows */}
