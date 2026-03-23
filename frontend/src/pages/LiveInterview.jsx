@@ -49,18 +49,39 @@ const ICE_SERVERS = [
   },
 ];
 
+// ── Custom Hook for WebRTC stream resilience ─────────────────────────────
+function useWebRTCStream(videoRef, stream) {
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !stream) return;
+
+    const attemptPlay = () => {
+      if (video.srcObject !== stream) video.srcObject = stream;
+      video.play().catch(e => console.warn('WebRTC play blocked or failed:', e));
+    };
+
+    attemptPlay();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && video.paused) {
+        attemptPlay();
+      }
+    };
+    
+    video.addEventListener('loadedmetadata', attemptPlay);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      video.removeEventListener('loadedmetadata', attemptPlay);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [stream, videoRef]);
+}
+
 // ── Gallery Tile: auto-attaches stream to video ─────────────────────
 const GalleryVideoTile = React.memo(function GalleryVideoTile({ token, stream, candidateName, type, onEnlarge }) {
   const videoRef = useRef(null);
-
-  useEffect(() => {
-    if (videoRef.current && stream) {
-      if (videoRef.current.srcObject !== stream) {
-        videoRef.current.srcObject = stream;
-      }
-      videoRef.current.play().catch(() => {});
-    }
-  }, [stream]);
+  useWebRTCStream(videoRef, stream);
 
   return (
     <div className="absolute inset-0">
@@ -84,12 +105,7 @@ const GalleryVideoTile = React.memo(function GalleryVideoTile({ token, stream, c
 // ── Enlarged Video: used in the modal ───────────────────────────────
 function EnlargedVideo({ stream, label, icon, objectFit }) {
   const videoRef = useRef(null);
-  useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.play().catch(() => {});
-    }
-  }, [stream]);
+  useWebRTCStream(videoRef, stream);
   return (
     <>
       {stream ? (
@@ -161,9 +177,9 @@ export default function LiveInterview() {
 
   const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
+      document.documentElement.requestFullscreen().catch(() => { });
     } else {
-      document.exitFullscreen().catch(() => {});
+      document.exitFullscreen().catch(() => { });
     }
   }, []);
 
@@ -341,10 +357,10 @@ export default function LiveInterview() {
           const pcDead = !pc || pc.connectionState === 'failed' || pc.connectionState === 'closed';
           // Single-view: re-request if watching this candidate and connection died
           if (watchingCandidateRef.current === data.from && pcDead) {
-              console.log('[HR WS] Auto-re-requesting stream for watched candidate:', data.from);
-              if (wsRef.current?.readyState === WebSocket.OPEN) {
-                wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
-              }
+            console.log('[HR WS] Auto-re-requesting stream for watched candidate:', data.from);
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(JSON.stringify({ type: 'request_stream', target: data.from }));
+            }
           }
           // Gallery: proactively connect to this candidate
           const galleryEntry = galleryPeersRef.current[data.from];
@@ -390,39 +406,39 @@ export default function LiveInterview() {
         console.log('[HR WS] Candidate disconnected:', data.conn_id, data.name);
         cleanupGalleryPeer(data.conn_id);
         if (watchingCandidateRef.current === data.conn_id) {
-            watchingCandidateRef.current = null;
-            setWatchingCandidate(null);
-            if (peerConnectionRef.current) {
-                peerConnectionRef.current.close();
-                peerConnectionRef.current = null;
-            }
-            setCameraStream(null);
-            setScreenStream(null);
+          watchingCandidateRef.current = null;
+          setWatchingCandidate(null);
+          if (peerConnectionRef.current) {
+            peerConnectionRef.current.close();
+            peerConnectionRef.current = null;
+          }
+          setCameraStream(null);
+          setScreenStream(null);
         }
         break;
       case 'webrtc_offer': {
         console.log('[HR WS] Got WebRTC offer from:', data.from);
         const isWatching = watchingCandidateRef.current === data.from;
-        const inGallery  = galleryPeersRef.current[data.from] !== undefined;
+        const inGallery = galleryPeersRef.current[data.from] !== undefined;
 
         if (isWatching) {
-            // Single-view (Watch button) takes priority when actively watching
-            handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer]', e));
-            // Also update gallery peer so gallery view stays in sync
-            if (inGallery) {
-                if (!galleryPeersRef.current[data.from]) {
-                    galleryPeersRef.current[data.from] = { pc: null, name: data.from };
-                    galleryICEQueueRef.current[data.from] = [];
-                }
-                handleGalleryOffer(data).catch(e => console.error('[Gallery Offer]', e));
-            }
-        } else {
-            // Gallery view — route to gallery handler
+          // Single-view (Watch button) takes priority when actively watching
+          handleWebRTCOffer(data).catch(e => console.error('[WebRTC Offer]', e));
+          // Also update gallery peer so gallery view stays in sync
+          if (inGallery) {
             if (!galleryPeersRef.current[data.from]) {
-                galleryPeersRef.current[data.from] = { pc: null, name: data.from };
-                galleryICEQueueRef.current[data.from] = [];
+              galleryPeersRef.current[data.from] = { pc: null, name: data.from };
+              galleryICEQueueRef.current[data.from] = [];
             }
             handleGalleryOffer(data).catch(e => console.error('[Gallery Offer]', e));
+          }
+        } else {
+          // Gallery view — route to gallery handler
+          if (!galleryPeersRef.current[data.from]) {
+            galleryPeersRef.current[data.from] = { pc: null, name: data.from };
+            galleryICEQueueRef.current[data.from] = [];
+          }
+          handleGalleryOffer(data).catch(e => console.error('[Gallery Offer]', e));
         }
         break;
       }
@@ -969,19 +985,8 @@ export default function LiveInterview() {
   };
 
   // ── Attach streams to video elements (with explicit play for mobile) ───
-  useEffect(() => {
-    if (cameraVideoRef.current && cameraStream) {
-      cameraVideoRef.current.srcObject = cameraStream;
-      cameraVideoRef.current.play().catch(() => {});
-    }
-  }, [cameraStream]);
-
-  useEffect(() => {
-    if (screenVideoRef.current && screenStream) {
-      screenVideoRef.current.srcObject = screenStream;
-      screenVideoRef.current.play().catch(() => {});
-    }
-  }, [screenStream]);
+  useWebRTCStream(cameraVideoRef, cameraStream);
+  useWebRTCStream(screenVideoRef, screenStream);
 
   if (loading) {
     return (
@@ -1017,13 +1022,12 @@ export default function LiveInterview() {
 
         {/* Recommendation */}
         {rpt.recommendation && (
-          <div className={`rounded-xl p-5 mb-6 border flex items-start space-x-3 ${
-            rpt.recommendation === 'Selected'
+          <div className={`rounded-xl p-5 mb-6 border flex items-start space-x-3 ${rpt.recommendation === 'Selected'
               ? 'bg-green-50 border-green-200'
               : rpt.recommendation.startsWith('Maybe')
-              ? 'bg-yellow-50 border-yellow-200'
-              : 'bg-red-50 border-red-200'
-          }`}>
+                ? 'bg-yellow-50 border-yellow-200'
+                : 'bg-red-50 border-red-200'
+            }`}>
             {rpt.recommendation === 'Selected' ? (
               <CheckCircle size={22} className="text-green-600 flex-shrink-0 mt-0.5" />
             ) : rpt.recommendation.startsWith('Maybe') ? (
@@ -1032,10 +1036,9 @@ export default function LiveInterview() {
               <XCircle size={22} className="text-red-600 flex-shrink-0 mt-0.5" />
             )}
             <div>
-              <p className={`font-semibold ${
-                rpt.recommendation === 'Selected' ? 'text-green-800'
+              <p className={`font-semibold ${rpt.recommendation === 'Selected' ? 'text-green-800'
                   : rpt.recommendation.startsWith('Maybe') ? 'text-yellow-800' : 'text-red-800'
-              }`}>
+                }`}>
                 Recommendation: {rpt.recommendation}
               </p>
               {rpt.confidence_analysis && (
@@ -1060,9 +1063,8 @@ export default function LiveInterview() {
               )}
             </div>
             <div className="bg-white rounded-xl border border-gray-100 p-4 text-center">
-              <div className={`text-2xl font-bold ${
-                roundSummary.hr?.questions_asked > 0 ? getScoreColor(roundSummary.hr?.score || 0) : 'text-gray-300'
-              }`}>
+              <div className={`text-2xl font-bold ${roundSummary.hr?.questions_asked > 0 ? getScoreColor(roundSummary.hr?.score || 0) : 'text-gray-300'
+                }`}>
                 {roundSummary.hr?.questions_asked > 0 ? `${Math.round(roundSummary.hr?.score || 0)}%` : '—'}
               </div>
               <div className="text-xs text-gray-500 mt-1">
@@ -1157,27 +1159,24 @@ export default function LiveInterview() {
               <div key={i} className="border border-gray-100 rounded-lg p-4">
                 <div className="flex items-start justify-between mb-2">
                   <div className="flex items-center space-x-2">
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      qe.round === 'HR' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
-                    }`}>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${qe.round === 'HR' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                      }`}>
                       {qe.round || 'Technical'}
                     </span>
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      qe.difficulty === 'hard' ? 'bg-red-100 text-red-700'
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${qe.difficulty === 'hard' ? 'bg-red-100 text-red-700'
                         : qe.difficulty === 'easy' ? 'bg-green-100 text-green-700'
-                        : 'bg-yellow-100 text-yellow-700'
-                    }`}>
+                          : 'bg-yellow-100 text-yellow-700'
+                      }`}>
                       {qe.difficulty || 'medium'}
                     </span>
                     <p className="text-sm font-medium text-gray-900">Q{i + 1}: {qe.question}</p>
                   </div>
                   <div className="flex items-center space-x-2 flex-shrink-0">
                     {qe.answer_strength && (
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                        qe.answer_strength === 'strong' ? 'bg-green-100 text-green-700'
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${qe.answer_strength === 'strong' ? 'bg-green-100 text-green-700'
                           : qe.answer_strength === 'moderate' ? 'bg-yellow-100 text-yellow-700'
-                          : 'bg-red-100 text-red-700'
-                      }`}>
+                            : 'bg-red-100 text-red-700'
+                        }`}>
                         {qe.answer_strength}
                       </span>
                     )}
@@ -1415,11 +1414,11 @@ export default function LiveInterview() {
             label: 'Avg Score',
             value: candidates.filter(c => c.avg_scores?.overall_score > 0).length > 0
               ? Math.round(
-                  candidates
-                    .filter(c => c.avg_scores?.overall_score > 0)
-                    .reduce((sum, c) => sum + c.avg_scores.overall_score, 0) /
-                  candidates.filter(c => c.avg_scores?.overall_score > 0).length
-                ) + '%'
+                candidates
+                  .filter(c => c.avg_scores?.overall_score > 0)
+                  .reduce((sum, c) => sum + c.avg_scores.overall_score, 0) /
+                candidates.filter(c => c.avg_scores?.overall_score > 0).length
+              ) + '%'
               : '—',
             icon: BarChart3,
             color: 'text-purple-600',
@@ -1441,11 +1440,10 @@ export default function LiveInterview() {
       <div className="flex items-center space-x-1 mb-6 bg-gray-100 rounded-xl p-1 w-fit">
         <button
           onClick={() => setActiveTab('candidates')}
-          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
-            activeTab === 'candidates'
+          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'candidates'
               ? 'bg-white text-gray-900 shadow-sm'
               : 'text-gray-500 hover:text-gray-700'
-          }`}
+            }`}
         >
           <span className="flex items-center gap-2"><Users size={15} /> Candidates ({candidates.length})</span>
         </button>
@@ -1460,11 +1458,10 @@ export default function LiveInterview() {
               ensureAllGalleryConnections();
             }, 200);
           }}
-          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
-            activeTab === 'gallery'
+          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'gallery'
               ? 'bg-white text-gray-900 shadow-sm'
               : 'text-gray-500 hover:text-gray-700'
-          }`}
+            }`}
         >
           <span className="flex items-center gap-2">
             <LayoutGrid size={15} />
@@ -1478,11 +1475,10 @@ export default function LiveInterview() {
         </button>
         <button
           onClick={() => setActiveTab('duplicates')}
-          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${
-            activeTab === 'duplicates'
+          className={`px-5 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'duplicates'
               ? 'bg-white text-gray-900 shadow-sm'
               : 'text-gray-500 hover:text-gray-700'
-          }`}
+            }`}
         >
           <span className="flex items-center gap-2">
             <Copy size={15} />
@@ -1527,16 +1523,14 @@ export default function LiveInterview() {
                         <span className="bg-red-100 text-red-700 text-xs px-2.5 py-1 rounded-full font-semibold">
                           Asked to {dup.candidate_count} candidates
                         </span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                          dup.candidates[0]?.round === 'HR' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
-                        }`}>
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${dup.candidates[0]?.round === 'HR' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                          }`}>
                           {dup.candidates[0]?.round || 'Technical'}
                         </span>
-                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                          dup.candidates[0]?.difficulty === 'hard' ? 'bg-red-100 text-red-700'
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${dup.candidates[0]?.difficulty === 'hard' ? 'bg-red-100 text-red-700'
                             : dup.candidates[0]?.difficulty === 'easy' ? 'bg-green-100 text-green-700'
-                            : 'bg-yellow-100 text-yellow-700'
-                        }`}>
+                              : 'bg-yellow-100 text-yellow-700'
+                          }`}>
                           {dup.candidates[0]?.difficulty || 'medium'}
                         </span>
                       </div>
@@ -1570,193 +1564,190 @@ export default function LiveInterview() {
 
       {/* ── Candidates Tab ─────────────────────── */}
       {activeTab === 'candidates' && (<>
-      {/* Candidate list */}
-      {candidates.length === 0 ? (
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
-          <Users size={48} className="mx-auto text-gray-300 mb-4" />
-          <h2 className="text-lg font-semibold text-gray-700 mb-2">No candidates have started yet</h2>
-          <p className="text-gray-400 text-sm">Candidates will appear here once they begin their AI interview.</p>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          {candidates.map((c) => (
-            <div
-              key={c.candidate_email || c.session_id}
-              className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 hover:shadow-md transition"
-            >
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                {/* Candidate info */}
-                <div className="flex items-center space-x-4">
-                  <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold">
-                    {c.candidate_name?.[0]?.toUpperCase() || '?'}
+        {/* Candidate list */}
+        {candidates.length === 0 ? (
+          <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-12 text-center">
+            <Users size={48} className="mx-auto text-gray-300 mb-4" />
+            <h2 className="text-lg font-semibold text-gray-700 mb-2">No candidates have started yet</h2>
+            <p className="text-gray-400 text-sm">Candidates will appear here once they begin their AI interview.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {candidates.map((c) => (
+              <div
+                key={c.candidate_email || c.session_id}
+                className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 hover:shadow-md transition"
+              >
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  {/* Candidate info */}
+                  <div className="flex items-center space-x-4">
+                    <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center text-primary-700 font-bold">
+                      {c.candidate_name?.[0]?.toUpperCase() || '?'}
+                    </div>
+                    <div>
+                      <h3 className="font-semibold text-gray-900">{c.candidate_name || 'Not started'}</h3>
+                      <p className="text-sm text-gray-500">{c.candidate_email}</p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900">{c.candidate_name || 'Not started'}</h3>
-                    <p className="text-sm text-gray-500">{c.candidate_email}</p>
-                  </div>
-                </div>
 
-                {/* Round, Time, Progress & Scores */}
-                <div className="flex items-center space-x-6">
-                  {/* Current Round Badge */}
-                  {c.status === 'in_progress' && (
-                    <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${
-                      c.current_round === 'HR' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
-                    }`}>
-                      {c.current_round || 'Technical'}
-                    </span>
-                  )}
-
-                  {/* Time Remaining */}
-                  {c.status === 'in_progress' && c.time_status && (
-                    <div className="flex items-center space-x-1.5 text-sm">
-                      <Timer size={14} className={c.time_status.remaining_seconds < 120 ? 'text-red-500' : 'text-gray-400'} />
-                      <span className={`font-mono font-medium ${c.time_status.remaining_seconds < 120 ? 'text-red-600' : 'text-gray-600'}`}>
-                        {formatTimeRemaining(c.time_status)}
+                  {/* Round, Time, Progress & Scores */}
+                  <div className="flex items-center space-x-6">
+                    {/* Current Round Badge */}
+                    {c.status === 'in_progress' && (
+                      <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${c.current_round === 'HR' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+                        }`}>
+                        {c.current_round || 'Technical'}
                       </span>
-                    </div>
-                  )}
+                    )}
 
-                  {/* Questions Answered */}
-                  <div className="text-center">
-                    <div className="text-lg font-bold text-gray-700">{c.answered}</div>
-                    <div className="text-[10px] text-gray-400">Answered</div>
-                  </div>
-
-                  {/* Round Scores */}
-                  <div className="hidden md:flex items-center space-x-4">
-                    <div className="text-center">
-                      <div className={`text-lg font-bold ${getScoreColor(c.technical_score || c.avg_scores?.overall_score || 0)}`}>
-                        {c.technical_score ? Math.round(c.technical_score) + '%' : c.avg_scores?.overall_score > 0 ? Math.round(c.avg_scores.overall_score) + '%' : '—'}
-                      </div>
-                      <div className="text-[10px] text-gray-400">Tech</div>
-                    </div>
-                    {c.hr_score != null && (
-                      <div className="text-center">
-                        <div className={`text-lg font-bold ${getScoreColor(c.hr_score)}`}>
-                          {Math.round(c.hr_score)}%
-                        </div>
-                        <div className="text-[10px] text-gray-400">HR</div>
+                    {/* Time Remaining */}
+                    {c.status === 'in_progress' && c.time_status && (
+                      <div className="flex items-center space-x-1.5 text-sm">
+                        <Timer size={14} className={c.time_status.remaining_seconds < 120 ? 'text-red-500' : 'text-gray-400'} />
+                        <span className={`font-mono font-medium ${c.time_status.remaining_seconds < 120 ? 'text-red-600' : 'text-gray-600'}`}>
+                          {formatTimeRemaining(c.time_status)}
+                        </span>
                       </div>
                     )}
-                  </div>
 
-                  {/* Status badge */}
-                  <div className="flex items-center space-x-2">
-                    {getStatusIcon(c.status)}
-                    <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${getStatusBadge(c.status)}`}>
-                      {getStatusLabel(c.status)}
-                    </span>
-                  </div>
+                    {/* Questions Answered */}
+                    <div className="text-center">
+                      <div className="text-lg font-bold text-gray-700">{c.answered}</div>
+                      <div className="text-[10px] text-gray-400">Answered</div>
+                    </div>
 
-                  {/* View Report button */}
-                  {(c.status === 'completed' || c.status === 'failed') && (
-                    <button
-                      onClick={() => viewReport(c.candidate_token)}
-                      disabled={reportLoading}
-                      className="flex items-center space-x-1 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-sm font-medium hover:bg-primary-100 transition"
-                    >
-                      <FileText size={14} />
-                      <span>Report</span>
-                    </button>
-                  )}
+                    {/* Round Scores */}
+                    <div className="hidden md:flex items-center space-x-4">
+                      <div className="text-center">
+                        <div className={`text-lg font-bold ${getScoreColor(c.technical_score || c.avg_scores?.overall_score || 0)}`}>
+                          {c.technical_score ? Math.round(c.technical_score) + '%' : c.avg_scores?.overall_score > 0 ? Math.round(c.avg_scores.overall_score) + '%' : '—'}
+                        </div>
+                        <div className="text-[10px] text-gray-400">Tech</div>
+                      </div>
+                      {c.hr_score != null && (
+                        <div className="text-center">
+                          <div className={`text-lg font-bold ${getScoreColor(c.hr_score)}`}>
+                            {Math.round(c.hr_score)}%
+                          </div>
+                          <div className="text-[10px] text-gray-400">HR</div>
+                        </div>
+                      )}
+                    </div>
 
-                  {/* Watch Live button */}
-                  {c.status === 'in_progress' && (
-                    <button
-                      onClick={() => requestStream(c.candidate_token)}
-                      disabled={!wsConnected || !streamableCandidates[c.candidate_token]}
-                      className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-medium transition ${
-                        watchingCandidate === c.candidate_token
-                          ? 'bg-red-100 text-red-700'
-                          : streamableCandidates[c.candidate_token]
-                          ? 'bg-green-50 text-green-700 hover:bg-green-100'
-                          : 'bg-gray-100 text-gray-400'
-                      } ${(!wsConnected || !streamableCandidates[c.candidate_token]) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      <Video size={14} />
-                      <span>{watchingCandidate === c.candidate_token ? 'Watching' : streamableCandidates[c.candidate_token] ? 'Watch Live' : 'Connecting...'}</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Current question (for in-progress candidates) */}
-              {c.status === 'in_progress' && c.current_question && (
-                <div className="mt-4 bg-gray-50 rounded-lg p-3 text-sm">
-                  <span className="text-gray-500 font-medium">Current Question: </span>
-                  <span className="text-gray-700">{c.current_question}</span>
-                </div>
-              )}
-
-              {/* Termination reason (for failed candidates) */}
-              {c.termination_reason && (
-                <div className="mt-3 flex items-center space-x-2 text-xs">
-                  <AlertTriangle size={14} className="text-red-500" />
-                  <span className="text-red-600 font-medium">Termination Reason:</span>
-                  <span className="text-gray-600">{c.termination_reason}</span>
-                </div>
-              )}
-
-              {/* Latest evaluation (for in-progress candidates) */}
-              {c.status === 'in_progress' && c.latest_evaluation && (
-                <div className="mt-3 flex items-center space-x-4 text-xs text-gray-500">
-                  <span>Last answer:</span>
-                  <span className={`font-semibold ${getScoreColor(c.latest_evaluation.overall_score)}`}>
-                    {Math.round(c.latest_evaluation.overall_score)}% overall
-                  </span>
-                  {c.latest_evaluation.answer_strength && (
-                    <span className={`px-2 py-0.5 rounded-full font-medium ${
-                      c.latest_evaluation.answer_strength === 'strong' ? 'bg-green-100 text-green-700'
-                        : c.latest_evaluation.answer_strength === 'moderate' ? 'bg-yellow-100 text-yellow-700'
-                        : 'bg-red-100 text-red-700'
-                    }`}>
-                      {c.latest_evaluation.answer_strength}
-                    </span>
-                  )}
-                  {c.latest_evaluation.feedback && (
-                    <span className="text-gray-400 truncate max-w-md">{c.latest_evaluation.feedback}</span>
-                  )}
-                </div>
-              )}
-
-              {/* Proctoring Stats */}
-              {c.proctoring && (c.proctoring.gaze_violations > 0 || c.proctoring.multi_person_alerts > 0 || c.proctoring.tab_switches > 0) && (
-                <div className="mt-3 flex items-center flex-wrap gap-3 text-xs">
-                  <div className="flex items-center space-x-1 text-gray-500">
-                    <Shield size={12} className="text-cyan-600" />
-                    <span className="font-medium">Proctoring:</span>
-                  </div>
-                  {c.proctoring.gaze_violations > 0 && (
-                    <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${c.proctoring.gaze_violations < 5 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
-                      <Eye size={10} /> Gaze: {c.proctoring.gaze_violations}
-                    </span>
-                  )}
-                  {c.proctoring.multi_person_alerts > 0 && (
-                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700">
-                      <UserX size={10} /> Multi-Person: {c.proctoring.multi_person_alerts}
-                    </span>
-                  )}
-                  {c.proctoring.tab_switches > 0 && (
-                    <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${c.proctoring.tab_switches < 3 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
-                      <MonitorX size={10} /> Tabs: {c.proctoring.tab_switches}
-                    </span>
-                  )}
-                  {(() => {
-                    const p = c.proctoring;
-                    const score = Math.max(0, 100 - ((p.gaze_violations || 0) * 3) - ((p.multi_person_alerts || 0) * 15) - ((p.tab_switches || 0) * 10) - ((p.total_away_time_sec || 0) * 0.5));
-                    return (
-                      <span className={`px-2 py-0.5 rounded-full font-bold ${score >= 80 ? 'bg-green-100 text-green-700' : score >= 50 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
-                        Integrity: {Math.round(score)}%
+                    {/* Status badge */}
+                    <div className="flex items-center space-x-2">
+                      {getStatusIcon(c.status)}
+                      <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${getStatusBadge(c.status)}`}>
+                        {getStatusLabel(c.status)}
                       </span>
-                    );
-                  })()}
+                    </div>
+
+                    {/* View Report button */}
+                    {(c.status === 'completed' || c.status === 'failed') && (
+                      <button
+                        onClick={() => viewReport(c.candidate_token)}
+                        disabled={reportLoading}
+                        className="flex items-center space-x-1 px-3 py-1.5 bg-primary-50 text-primary-700 rounded-lg text-sm font-medium hover:bg-primary-100 transition"
+                      >
+                        <FileText size={14} />
+                        <span>Report</span>
+                      </button>
+                    )}
+
+                    {/* Watch Live button */}
+                    {c.status === 'in_progress' && (
+                      <button
+                        onClick={() => requestStream(c.candidate_token)}
+                        disabled={!wsConnected || !streamableCandidates[c.candidate_token]}
+                        className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-medium transition ${watchingCandidate === c.candidate_token
+                            ? 'bg-red-100 text-red-700'
+                            : streamableCandidates[c.candidate_token]
+                              ? 'bg-green-50 text-green-700 hover:bg-green-100'
+                              : 'bg-gray-100 text-gray-400'
+                          } ${(!wsConnected || !streamableCandidates[c.candidate_token]) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      >
+                        <Video size={14} />
+                        <span>{watchingCandidate === c.candidate_token ? 'Watching' : streamableCandidates[c.candidate_token] ? 'Watch Live' : 'Connecting...'}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+
+                {/* Current question (for in-progress candidates) */}
+                {c.status === 'in_progress' && c.current_question && (
+                  <div className="mt-4 bg-gray-50 rounded-lg p-3 text-sm">
+                    <span className="text-gray-500 font-medium">Current Question: </span>
+                    <span className="text-gray-700">{c.current_question}</span>
+                  </div>
+                )}
+
+                {/* Termination reason (for failed candidates) */}
+                {c.termination_reason && (
+                  <div className="mt-3 flex items-center space-x-2 text-xs">
+                    <AlertTriangle size={14} className="text-red-500" />
+                    <span className="text-red-600 font-medium">Termination Reason:</span>
+                    <span className="text-gray-600">{c.termination_reason}</span>
+                  </div>
+                )}
+
+                {/* Latest evaluation (for in-progress candidates) */}
+                {c.status === 'in_progress' && c.latest_evaluation && (
+                  <div className="mt-3 flex items-center space-x-4 text-xs text-gray-500">
+                    <span>Last answer:</span>
+                    <span className={`font-semibold ${getScoreColor(c.latest_evaluation.overall_score)}`}>
+                      {Math.round(c.latest_evaluation.overall_score)}% overall
+                    </span>
+                    {c.latest_evaluation.answer_strength && (
+                      <span className={`px-2 py-0.5 rounded-full font-medium ${c.latest_evaluation.answer_strength === 'strong' ? 'bg-green-100 text-green-700'
+                          : c.latest_evaluation.answer_strength === 'moderate' ? 'bg-yellow-100 text-yellow-700'
+                            : 'bg-red-100 text-red-700'
+                        }`}>
+                        {c.latest_evaluation.answer_strength}
+                      </span>
+                    )}
+                    {c.latest_evaluation.feedback && (
+                      <span className="text-gray-400 truncate max-w-md">{c.latest_evaluation.feedback}</span>
+                    )}
+                  </div>
+                )}
+
+                {/* Proctoring Stats */}
+                {c.proctoring && (c.proctoring.gaze_violations > 0 || c.proctoring.multi_person_alerts > 0 || c.proctoring.tab_switches > 0) && (
+                  <div className="mt-3 flex items-center flex-wrap gap-3 text-xs">
+                    <div className="flex items-center space-x-1 text-gray-500">
+                      <Shield size={12} className="text-cyan-600" />
+                      <span className="font-medium">Proctoring:</span>
+                    </div>
+                    {c.proctoring.gaze_violations > 0 && (
+                      <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${c.proctoring.gaze_violations < 5 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                        <Eye size={10} /> Gaze: {c.proctoring.gaze_violations}
+                      </span>
+                    )}
+                    {c.proctoring.multi_person_alerts > 0 && (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-700">
+                        <UserX size={10} /> Multi-Person: {c.proctoring.multi_person_alerts}
+                      </span>
+                    )}
+                    {c.proctoring.tab_switches > 0 && (
+                      <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full font-medium ${c.proctoring.tab_switches < 3 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                        <MonitorX size={10} /> Tabs: {c.proctoring.tab_switches}
+                      </span>
+                    )}
+                    {(() => {
+                      const p = c.proctoring;
+                      const score = Math.max(0, 100 - ((p.gaze_violations || 0) * 3) - ((p.multi_person_alerts || 0) * 15) - ((p.tab_switches || 0) * 10) - ((p.total_away_time_sec || 0) * 0.5));
+                      return (
+                        <span className={`px-2 py-0.5 rounded-full font-bold ${score >= 80 ? 'bg-green-100 text-green-700' : score >= 50 ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}`}>
+                          Integrity: {Math.round(score)}%
+                        </span>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </>)}
 
       {/* ── Gallery View Tab ───────────────────────── */}
@@ -1794,7 +1785,7 @@ export default function LiveInterview() {
                     if (cHasCamera) activeFeeds.push({ type: 'camera', stream: cameraStream });
                     if (cHasScreen) activeFeeds.push({ type: 'screen', stream: screenStream });
                     if (activeFeeds.length === 0) activeFeeds.push({ type: 'camera', stream: null }); // Fallback
-                    
+
                     return (
                       <div
                         key={candidate.token}
@@ -1805,13 +1796,13 @@ export default function LiveInterview() {
                         <div className={`relative bg-black grid ${activeFeeds.length > 1 ? 'grid-cols-2' : 'grid-cols-1'} gap-1 p-1`} style={{ aspectRatio: '16/9' }}>
                           {activeFeeds.map((feed, idx) => (
                             <div key={`${candidate.token}-${feed.type}-${idx}`} className="relative h-full w-full rounded-lg overflow-hidden bg-gray-900 border border-gray-800">
-                                <GalleryVideoTile
-                                  token={candidate.token}
-                                  stream={feed.stream}
-                                  candidateName={feed.type === 'screen' ? 'Screen' : 'Camera'}
-                                  type={feed.type}
-                                  onEnlarge={() => setEnlargedFeed(candidate.token)}
-                                />
+                              <GalleryVideoTile
+                                token={candidate.token}
+                                stream={feed.stream}
+                                candidateName={feed.type === 'screen' ? 'Screen' : 'Camera'}
+                                type={feed.type}
+                                onEnlarge={() => setEnlargedFeed(candidate.token)}
+                              />
                             </div>
                           ))}
                           {/* LIVE badge (if any active stream) */}
@@ -1864,11 +1855,10 @@ export default function LiveInterview() {
                         <button
                           key={i}
                           onClick={() => setGalleryPage(i)}
-                          className={`w-8 h-8 rounded-lg text-sm font-semibold transition ${
-                            i === currentPage
+                          className={`w-8 h-8 rounded-lg text-sm font-semibold transition ${i === currentPage
                               ? 'bg-primary-600 text-white shadow-sm'
                               : 'bg-white border border-gray-200 text-gray-600 hover:bg-gray-50'
-                          }`}
+                            }`}
                         >
                           {i + 1}
                         </button>
@@ -1898,7 +1888,7 @@ export default function LiveInterview() {
               const gs = galleryStreams[candidateToken];
               const candidateInfo = inProgressCandidates.find(c => c.token === candidateToken);
               const candidateName = candidateInfo?.name || gs?.name || candidateToken;
-              
+
               const cameraStream = gs?.camera || null;
               const screenStream = gs?.screen || null;
               const cHasCamera = candidateInfo?.hasCamera || !!cameraStream;
@@ -1925,7 +1915,7 @@ export default function LiveInterview() {
                 <div
                   ref={enlargedModalRef}
                   className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
-                  onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setEnlargedFeed(null); }}
+                  onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => { }); setEnlargedFeed(null); }}
                 >
                   <div className={`relative w-full mx-4 ${isFullscreen ? 'max-w-full h-full flex flex-col justify-center' : 'max-w-4xl'}`} onClick={e => e.stopPropagation()}>
                     {/* Toolbar */}
@@ -1960,7 +1950,7 @@ export default function LiveInterview() {
                           {isFullscreen ? <Minimize2 size={20} className="text-white" /> : <Maximize2 size={20} className="text-white" />}
                         </button>
                         <button
-                          onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); setEnlargedFeed(null); }}
+                          onClick={() => { if (document.fullscreenElement) document.exitFullscreen().catch(() => { }); setEnlargedFeed(null); }}
                           className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition"
                         >
                           <X size={20} className="text-white" />
