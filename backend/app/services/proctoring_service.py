@@ -259,7 +259,7 @@ class ObjectDetectionEngine:
     Falls back to Haar cascade face count when YOLO is unavailable.
     """
 
-    CONFIDENCE_THRESHOLD = 0.40
+    CONFIDENCE_THRESHOLD = 0.45
     PERSON_CONFIDENCE = 0.55
     # Minimum bounding box area as fraction of frame area to count as a person
     # Filters out tiny/partial detections (clothes on chair, posters, etc.)
@@ -865,7 +865,7 @@ class ProctorSession:
 
     # Identity verification interval
     VERIFY_INTERVAL_SEC = 4.0
-    FACE_SIMILARITY_THRESHOLD = 0.55  # Cosine similarity threshold for identity match
+    FACE_SIMILARITY_THRESHOLD = 0.40  # Cosine similarity threshold for identity match (lowered from 0.55 — same-person similarity drops to 0.42-0.48 under normal interview conditions)
 
     def __init__(self, session_id: str):
         self.session_id = session_id
@@ -900,9 +900,9 @@ class ProctorSession:
         self._last_mismatch_time = 0.0
         self._last_person_alert_time = 0.0
         self._last_object_alert_time = 0.0
-        self._MISMATCH_COOLDOWN = 15.0   # seconds between identity mismatch alerts
+        self._MISMATCH_COOLDOWN = 45.0   # seconds between identity mismatch alerts (raised from 15 to reduce false positives)
         self._PERSON_COOLDOWN = 10.0
-        self._OBJECT_COOLDOWN = 20.0
+        self._OBJECT_COOLDOWN = 8.0    # seconds between object alert logging (reduced from 20 for persistent object tracking)
 
     # ── Registration ──────────────────────────────────────────────
 
@@ -921,13 +921,22 @@ class ProctorSession:
                 "message": "No face detected in frame — ensure your face is visible",
             }
 
+        # Quality gate: skip embeddings from bad/blurry frames
+        norm = float(np.linalg.norm(embedding))
+        if norm < 1.0:
+            return {
+                "registered": False,
+                "frames_collected": len(self._reference_embeddings),
+                "message": "Frame quality too low — please ensure good lighting",
+            }
+
         self._reference_embeddings.append(embedding)
 
         # Compute running average
         self._reference_embedding = np.mean(self._reference_embeddings, axis=0)
 
-        # Registration is solid after 3+ embeddings
-        if len(self._reference_embeddings) >= 3:
+        # Registration is solid after 5+ embeddings (raised from 3 for more robust baseline)
+        if len(self._reference_embeddings) >= 5:
             self._registration_complete = True
 
         return {
@@ -992,23 +1001,27 @@ class ProctorSession:
                 frame=frame,
             )
 
-        # Suspicious objects
-        if detection.suspicious_objects and (now - self._last_object_alert_time) > self._OBJECT_COOLDOWN:
-            self._last_object_alert_time = now
-            for obj in detection.suspicious_objects:
-                self._suspicious_object_events += 1
-                obj_type = obj["type"]
-                risk_type = "phone_detected" if obj_type == "cell_phone" else "suspicious_object"
-                self._risk_engine.add_risk(
-                    risk_type, confidence=obj.get("confidence", 0.5),
-                    details=f"Suspicious object detected: {obj_type}",
-                )
-                self._violation_logger.log(
-                    risk_type, obj.get("confidence", 0.5),
-                    RISK_WEIGHTS.get(risk_type, 20),
-                    f"{obj_type} detected with {obj.get('confidence', 0):.0%} confidence",
-                    frame=frame,
-                )
+        # Suspicious objects — always count detections, only throttle risk/log calls
+        if detection.suspicious_objects:
+            # Always increment the raw detection counter (no cooldown)
+            self._suspicious_object_events += len(detection.suspicious_objects)
+
+            # Throttle risk scoring and logging to avoid log spam
+            if (now - self._last_object_alert_time) > self._OBJECT_COOLDOWN:
+                self._last_object_alert_time = now
+                for obj in detection.suspicious_objects:
+                    obj_type = obj["type"]
+                    risk_type = "phone_detected" if obj_type == "cell_phone" else "suspicious_object"
+                    self._risk_engine.add_risk(
+                        risk_type, confidence=obj.get("confidence", 0.5),
+                        details=f"Suspicious object detected: {obj_type}",
+                    )
+                    self._violation_logger.log(
+                        risk_type, obj.get("confidence", 0.5),
+                        RISK_WEIGHTS.get(risk_type, 20),
+                        f"{obj_type} detected with {obj.get('confidence', 0):.0%} confidence",
+                        frame=frame,
+                    )
 
         # ── 2. Attention Monitoring (run BEFORE identity verification) ──
         # Running attention first lets us distinguish "looking away" from
@@ -1038,7 +1051,7 @@ class ProctorSession:
         # head naturally produces a different embedding and would cause
         # false "person mismatch" alerts.
         identity_result = None
-        can_verify = not is_looking_away and attention_result.get("direction") not in ("absent", "left", "right", "down", "up")
+        can_verify = not is_looking_away and attention_result.get("direction") not in ("absent", "left", "right", "down", "up", "unknown")
         if self.is_registered and (now - self._last_verify_time) >= self.VERIFY_INTERVAL_SEC:
             if can_verify:
                 self._last_verify_time = now

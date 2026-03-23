@@ -248,7 +248,42 @@ export default function CandidateJoin() {
     synthRef.current.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 0.95;
-    utterance.pitch = 1;
+    utterance.pitch = 1.1; // Slightly higher pitch often sounds more natural/female
+
+    // Try to find a good female English voice natively
+    const voices = synthRef.current.getVoices();
+    if (voices.length > 0) {
+      const preferredVoices = [
+        'Google UK English Female',
+        'Google US English',
+        'Microsoft Zira', // Windows native female voice
+        'Microsoft Hazel', // Windows UK female
+        'Samantha', // macOS native female voice
+        'Karen', // macOS Australian female
+        'Tessa', // macOS South African female
+        'Victoria' // macOS female
+      ];
+      
+      let selectedVoice = null;
+      for (const pref of preferredVoices) {
+        selectedVoice = voices.find(v => v.name.includes(pref));
+        if (selectedVoice) break;
+      }
+      
+      // Fallback 1: Any voice explicitly containing "Female" and English
+      if (!selectedVoice) {
+        selectedVoice = voices.find(v => v.lang.startsWith('en') && v.name.toLowerCase().includes('female'));
+      }
+      // Fallback 2: Any English voice as last resort
+      if (!selectedVoice) {
+        selectedVoice = voices.find(v => v.lang.startsWith('en'));
+      }
+
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+      }
+    }
+
     utterance.onstart = () => setIsSpeaking(true);
     utterance.onend = () => {
       setIsSpeaking(false);

@@ -105,14 +105,14 @@ class GazeStateMachine:
 
     def __init__(
         self,
-        window_size: int = 5,
-        away_pct_threshold: float = 0.50,
+        window_size: int = 10,            # was 5 — larger window prevents single-frame false triggers
+        away_pct_threshold: float = 0.70,  # was 0.50 — need 7/10 frames away to trigger
         look_pct_threshold: float = 0.50,
-        deviation_hold_sec: float = 2.0,
+        deviation_hold_sec: float = 4.0,   # was 2.0 — 4 seconds sustained before warning
         recovery_entry_sec: float = 0.0,
-        recovery_full_sec: float = 2.0,
-        gaze_threshold: float = 50.0,
-        stale_timeout_sec: float = 5.0,
+        recovery_full_sec: float = 3.0,    # was 2.0 — longer recovery to avoid flapping
+        gaze_threshold: float = 45.0,      # was 50.0 — only truly absent faces cross this
+        stale_timeout_sec: float = 6.0,    # was 5.0 — more tolerance for frame drops
     ):
         # Configurable thresholds
         self._window_size = window_size
@@ -545,10 +545,10 @@ class MultimodalAnalysisEngine:
                         eye_score = 75.0  # acceptable — still on screen
 
                     else:
-                        # No eyes detected — could be looking down at keyboard
-                        # briefly or blinking. Face is still there, so not a
-                        # major violation.
-                        eye_score = 45.0
+                        # No eyes detected — candidate likely reading screen
+                        # (eyes angled slightly down). This is normal interview
+                        # behavior. Do not penalize.
+                        eye_score = 65.0  # was 45.0 — now above the FSM gaze_threshold
 
                 # ── Combine signals ────────────────────────────────
                 if eyes_detected:
@@ -624,7 +624,7 @@ class MultimodalAnalysisEngine:
             "emotion_stability": 50.0,
             "face_detected": False,
             "micro_expressions": [],
-            "eye_contact_score": 15.0,  # Below gaze_threshold so FSM treats as "away"
+            "eye_contact_score": 10.0,  # Below gaze_threshold so FSM treats as "away" (only when CV2 unavailable)
         }
 
     # ── Voice Sentiment Analysis ──────────────────────
