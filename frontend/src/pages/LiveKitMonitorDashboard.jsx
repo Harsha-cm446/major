@@ -9,7 +9,7 @@ import {
   ParticipantTile,
   ParticipantName
 } from '@livekit/components-react';
-import '@livekit/components-styles';
+import '@livekit/components-styles/index.css';
 import { Track } from 'livekit-client';
 import { Loader2, Users } from 'lucide-react';
 
