@@ -67,8 +67,13 @@ class Settings(BaseSettings):
     class Config:
         env_file = str(_ENV_FILE)
 
-
 settings = Settings()
+
+# Strip any accidental whitespace/quotes from Agora credentials
+if settings.AGORA_APP_ID:
+    settings.AGORA_APP_ID = settings.AGORA_APP_ID.strip().strip('"').strip("'")
+if settings.AGORA_APP_CERTIFICATE:
+    settings.AGORA_APP_CERTIFICATE = settings.AGORA_APP_CERTIFICATE.strip().strip('"').strip("'")
 
 # Startup diagnostic — print only if Gemini key is missing
 if not settings.GEMINI_API_KEY:
