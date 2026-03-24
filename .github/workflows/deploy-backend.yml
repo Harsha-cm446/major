@@ -91,8 +91,12 @@ jobs:
               SMTP_USER="${{ secrets.SMTP_USER }}" \
               SMTP_PASSWORD="${{ secrets.SMTP_PASSWORD }}" \
               EMAIL_FROM="${{ secrets.EMAIL_FROM }}" \
-                LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}" \
-                LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"
+              LIVEKIT_API_KEY="${{ secrets.LIVEKIT_API_KEY }}" \
+              LIVEKIT_API_SECRET="${{ secrets.LIVEKIT_API_SECRET }}"
+
+          # Set fallback LLM credentials
+          az containerapp update \
+            --name ${{ env.BACKEND_APP_NAME }} \
             --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
             --set-env-vars \
               "GEMINI_FALLBACK_API_KEYS=${{ secrets.GEMINI_FALLBACK_API_KEYS }}" \
