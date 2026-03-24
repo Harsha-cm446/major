@@ -1,17 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import {
   LiveKitRoom,
-  VideoConference,
+  useParticipants,
+  VideoTrack,
+  AudioTrack,
   RoomAudioRenderer,
-  ControlBar,
-  useTracks,
-  GridLayout,
-  ParticipantTile,
   ParticipantName
 } from '@livekit/components-react';
 import '@livekit/components-styles/index.css';
 import { Track } from 'livekit-client';
-import { Loader2, Users } from 'lucide-react';
+import { Loader2, Users, Maximize2, Minimize2 } from 'lucide-react';
 import api from '../services/api';
 
 export default function LiveKitMonitorDashboard({ sessionId, embedded = false, focusId = null }) {
@@ -80,24 +78,21 @@ export default function LiveKitMonitorDashboard({ sessionId, embedded = false, f
         )}
         
         {/* Main Content Area */}
-        <div className="flex-1 bg-black overflow-hidden relative">
-          <GalleryView focusId={focusId} />
+        <div className="flex-1 bg-black overflow-hidden relative p-4">
+          <DashboardContent focusId={focusId} />
         </div>
       </div>
-      <RoomAudioRenderer />
+      {/* We purposefully omit RoomAudioRenderer here because we handle audio manually per-candidate */}
     </LiveKitRoom>
   );
 }
 
-// Custom Grid layout to display both camera and screen share tracks
-function GalleryView({ focusId }) {
-  // Get all camera and screen share video tracks
-  const tracks = useTracks([
-    { source: Track.Source.Camera, withPlaceholder: true },
-    { source: Track.Source.ScreenShare, withPlaceholder: false },
-  ]);
+function DashboardContent({ focusId }) {
+  const allParticipants = useParticipants();
+  const candidates = allParticipants.filter(p => !p.isLocal); // Exclude the HR monitor itself
+  const [selectedCandidateId, setSelectedCandidateId] = useState(focusId || null);
 
-  if (tracks.length === 0) {
+  if (candidates.length === 0) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center text-gray-500">
         <Users className="w-12 h-12 mb-4 opacity-50" />
@@ -106,17 +101,79 @@ function GalleryView({ focusId }) {
     );
   }
 
-  // Filter if we are focusing on a specific candidate ID
-  const filteredTracks = focusId 
-    ? tracks.filter(t => t.participant.identity === focusId)
-    : tracks;
+  // If a candidate is selected, show them in full view
+  const selectedCandidate = candidates.find(c => c.identity === selectedCandidateId);
+  if (selectedCandidate) {
+    return (
+      <div className="w-full h-full flex flex-col">
+        <div className="flex justify-between items-center mb-4">
+          <div className="text-white">
+            <h3 className="text-xl font-bold">{selectedCandidate.name || selectedCandidate.identity}</h3>
+            <span className="text-sm text-gray-400">{selectedCandidate.identity}</span>
+          </div>
+          <button 
+            onClick={() => setSelectedCandidateId(null)}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors"
+          >
+            <Minimize2 className="w-4 h-4" /> Back to Grid
+          </button>
+        </div>
+        
+        {/* Play audio only for the selected candidate */}
+        <AudioTrack participant={selectedCandidate} source={Track.Source.Microphone} />
 
+        <div className="flex-1 min-h-0 flex gap-4">
+          {/* Main Screen Share Area */}
+          <div className="flex-1 bg-gray-900 rounded-lg overflow-hidden border border-gray-700 relative">
+            <VideoTrack participant={selectedCandidate} source={Track.Source.ScreenShare} className="w-full h-full object-contain bg-black" />
+            <div className="absolute top-2 left-2 bg-black/60 px-2 py-1 rounded text-xs text-white">Screen Share</div>
+          </div>
+          
+          {/* Side Camera Feed */}
+          <div className="w-1/4 max-w-sm bg-gray-900 rounded-lg overflow-hidden border border-gray-700 relative flex flex-col">
+            <VideoTrack participant={selectedCandidate} source={Track.Source.Camera} className="w-full h-full object-cover bg-black" />
+            <div className="absolute top-2 left-2 bg-black/60 px-2 py-1 rounded text-xs text-white">Camera</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Otherwise, show all candidates in a grid style
   return (
-    <GridLayout
-      tracks={filteredTracks}
-      style={{ height: 'calc(100vh - var(--lk-control-bar-height))', width: '100%' }}
-    >
-      <ParticipantTile />
-    </GridLayout>
+    <div className="w-full h-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 overflow-y-auto">
+      {candidates.map(participant => (
+        <div 
+          key={participant.identity}
+          className="col-span-1 bg-gray-800 rounded-xl overflow-hidden border border-gray-700 flex flex-col cursor-pointer hover:border-indigo-500 transition-colors group"
+          onClick={() => setSelectedCandidateId(participant.identity)}
+        >
+          {/* Card Header */}
+          <div className="p-3 bg-gray-900 flex justify-between items-center border-b border-gray-700">
+            <div>
+              <div className="font-semibold text-white truncate max-w-[200px]" title={participant.name || participant.identity}>
+                {participant.name || participant.identity}
+              </div>
+              <div className="text-xs text-gray-400 truncate max-w-[200px]" title={participant.identity}>
+                {participant.identity}
+              </div>
+            </div>
+            <Maximize2 className="w-4 h-4 text-gray-500 group-hover:text-indigo-400" />
+          </div>
+
+          {/* Card Media (No Audio Rendered Here) */}
+          <div className="flex-1 p-2 gap-2 flex flex-col aspect-video relative bg-black">
+            <div className="flex-1 relative rounded overflow-hidden">
+               <VideoTrack participant={participant} source={Track.Source.ScreenShare} className="w-full h-full object-contain bg-gray-900" />
+               <div className="absolute top-1 left-1 bg-black/50 text-[10px] text-white px-1 rounded">Screen</div>
+            </div>
+            <div className="absolute bottom-2 right-2 w-1/3 aspect-video rounded border border-gray-600 overflow-hidden shadow-lg z-10">
+               <VideoTrack participant={participant} source={Track.Source.Camera} className="w-full h-full object-cover bg-gray-800" />
+               <div className="absolute bottom-1 left-1 bg-black/50 text-[10px] text-white px-1 rounded">Cam</div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
