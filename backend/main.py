@@ -66,8 +66,12 @@ async def lifespan(app: FastAPI):
     try:
         import importlib.util
         import os
-        _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        _speech_to_text_path = os.path.join(_repo_root, "ai-engine", "speech_to_text.py")
+        _local_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        _docker_root = os.path.dirname(__file__)
+        _path1 = os.path.join(_local_root, "ai-engine", "speech_to_text.py")
+        _path2 = os.path.join(_docker_root, "ai-engine", "speech_to_text.py")
+        
+        _speech_to_text_path = _path1 if os.path.isfile(_path1) else _path2
 
         get_vosk_model = None
         VOSK_AVAILABLE = False

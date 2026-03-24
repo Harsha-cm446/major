@@ -23,6 +23,7 @@ export default function LiveInterview() {
   const [activeTab, setActiveTab] = useState('candidates'); // 'candidates' | 'duplicates' | 'gallery'
   const [duplicateQuestions, setDuplicateQuestions] = useState(null);
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
+  const [endingSession, setEndingSession] = useState(false);
 
   // Removed state and sync effects for legacy LiveInterview streams
 
@@ -123,10 +124,6 @@ export default function LiveInterview() {
     const secs = timeStatus.remaining_seconds % 60;
     return `${mins}:${String(secs).padStart(2, '0')}`;
   };
-
-  // ── Attach streams to video elements (with explicit play for mobile) ───
-  useWebRTCStream(cameraVideoRef, cameraStream);
-  useWebRTCStream(screenVideoRef, screenStream);
 
   if (loading) {
     return (
